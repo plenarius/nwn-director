@@ -2,11 +2,15 @@
 
 Scripted camera capture for Neverwinter Nights: Enhanced Edition modules.
 
-Give it a module and a list of its areas. It runs the module on a local server, logs your game
-client in as an invisible cameraman, and films a walkthrough of each area: one video per area,
-1080p60 with the game's sound, ready to cut into a trailer or a montage.
+Give it a module and what to film. It runs the module on a local server, logs your game client
+in as an invisible cameraman, and films each shot: one video per shot, 1080p60 with the game's
+sound.
 
-Early days: walkthroughs are all it does so far. More kinds of shots are planned.
+- **Walkthroughs** of whole areas, to cut into a trailer or a montage.
+- **Spots**: a slow circle around one place (a point, or an object by tag), to see what is
+  really there when triaging a bug report.
+
+Early days: more kinds of shots are planned (events: a script run while the camera rolls).
 
 ## What it does
 
@@ -20,12 +24,15 @@ Early days: walkthroughs are all it does so far. More kinds of shots are planned
 3. **Runs the copy on a plain server** in Docker (no NWNX, no database), on `127.0.0.1` only.
 4. **Starts your game client** from its own settings folder (made from yours, so your settings
    are never touched) and logs in with the character you give it.
-5. **Films each area:** an invisible walker (appearance 298, `Invisible_Human_Male`, base game)
-   walks the route and the camera follows it from behind at eye level. The cameraman is
+5. **Films each shot:** the camera follows an invisible walker (appearance 298,
+   `Invisible_Human_Male`, base game). For a walkthrough it walks the route and the camera
+   follows from behind at eye level; for a spot it stands at the place and the camera circles it
+   once. The cameraman is
    invisible and ethereal (Greater Sanctuary), so nothing notices or attacks it. Before rolling,
    it steps into every encounter so the area's monsters and wildlife spawn. The time is
    set to 10:00 with clear weather.
-6. **Records** each area to `<area>.mp4` with ffmpeg, then closes everything.
+6. **Records** each shot with ffmpeg (`<area>.mp4` for a walkthrough, `<area>-<x>-<y>.mp4` or
+   `<area>-<tag>.mp4` for a spot), then closes everything.
 
 ## Requirements
 
@@ -49,9 +56,14 @@ The server image must match your client's version (`--image`).
 # Which areas does the module have?
 ./director.py areas ~/modules/mymodule.mod
 
-# Film three of them, 45 seconds each.
+# Walkthroughs of three of them, 45 seconds each.
 ./director.py film ~/modules/mymodule.mod \
     --areas townsquare,forestroad,lakeshore \
+    --character ~/.local/share/Neverwinter\ Nights/localvault/somechar.bic
+
+# 20 seconds around a door (by tag) and around a point in another area.
+./director.py film ~/modules/mymodule.mod \
+    --spot townsquare@inn_door --spot lakeshore@120,87 --seconds 20 \
     --character ~/.local/share/Neverwinter\ Nights/localvault/somechar.bic
 ```
 
@@ -61,7 +73,9 @@ Options (`./director.py film --help` for all of them):
 
 | Option | |
 |---|---|
-| `--seconds N` | film each area for at most N seconds (default 45) |
+| `--areas A,B` | walkthroughs of these areas, in this order |
+| `--spot AREA@X,Y` / `--spot AREA@TAG` | circle a point, or an object by tag (repeatable) |
+| `--seconds N` | film each shot for at most N seconds (default 45) |
 | `--run` | the walker runs instead of walking |
 | `--out DIR` | where the videos go |
 | `--game DIR` | your NWN:EE install, if it isn't found by itself |
@@ -75,7 +89,10 @@ Options (`./director.py film --help` for all of them):
 - **The camera passes through trees and other placeables.** Its collision only covers the
   ground and walls, so in a dense forest it sometimes clips through a trunk or a bush.
 - **Modules built for NWNX or a database** load, but their scripts that need those stop where
-  they need them (the server log says so). The walkthroughs don't depend on any of it.
+  they need them (the server log says so), and the director doesn't depend on any of it. Some
+  of those stopped scripts can crash the plain server outright, though (seen with a script
+  aborted inside a delayed command). For such a module, run a server image with the plugins it
+  needs (`--image`).
 - **The client crashes when it closes** (a game bug, when it tears down the cameraman's
   invisibility effect). nwn-director kills it instead of quitting it, so no crash dialog is left
   on your screen.

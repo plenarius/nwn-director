@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""nwn-director: film walkthroughs of the areas of a Neverwinter Nights: Enhanced Edition module.
+"""nwn-director: film the areas of a Neverwinter Nights: Enhanced Edition module.
 
-    director.py film MODULE.mod --areas AREA[,AREA...] --character CHAR.bic [options]
+    director.py film MODULE.mod [--areas AREA[,AREA...]] [--spot AREA@X,Y|AREA@TAG ...]
+                                --character CHAR.bic [options]
     director.py areas MODULE.mod
 
 `film` copies the module with nwn-director's script in it, runs the copy on a local server
-(Docker), logs your game client in as the cameraman and records every area to OUT/<area>.mp4.
+(Docker), logs your game client in as the cameraman and records every shot to OUT/<name>.mp4:
+a walkthrough of each area in --areas (<area>.mp4), and a slow circle around each --spot
+(<area>-<x>-<y>.mp4 or <area>-<tag>.mp4).
 `areas` lists the module's areas (resref, tag, size, exits) to choose from.
 
 See README.md for requirements and how it works.
@@ -124,23 +127,29 @@ def where(p):
     return p[:2]
 
 
+def encounters(git):
+    """The middle of every encounter trigger: the cameraman steps into each before filming, so the
+    area's monsters and wildlife spawn."""
+    out = []
+    for e in git.get('Encounter List', {}).get('value', []):
+        geo = e.get('Geometry', {}).get('value', [])
+        if geo:
+            out.append([round(e['XPosition']['value'] + sum(p['X']['value'] for p in geo) / len(geo), 2),
+                        round(e['YPosition']['value'] + sum(p['Y']['value'] for p in geo) / len(geo), 2)])
+    return out
+
+
 def route(git):
     """The walker's stops in an area, nearest first from its first exit: every exit, placed
-    creature and encounter spawn point; and the middle of every encounter (the cameraman steps
-    into each before filming so they spawn)."""
+    creature and encounter spawn point. Empty if the area has no exits."""
     pts = exits(git)
     if not pts:
-        return {'stops': [], 'encounters': []}
+        return []
     for c in git.get('Creature List', {}).get('value', []):
         pts.append((c['XPosition']['value'], c['YPosition']['value']))
-    encounters = []
     for e in git.get('Encounter List', {}).get('value', []):
         for sp in e.get('SpawnPointList', {}).get('value', []):
             pts.append((sp['X']['value'], sp['Y']['value']))
-        geo = e.get('Geometry', {}).get('value', [])
-        if geo:
-            encounters.append([round(e['XPosition']['value'] + sum(p['X']['value'] for p in geo) / len(geo), 2),
-                               round(e['YPosition']['value'] + sum(p['Y']['value'] for p in geo) / len(geo), 2)])
     # Stops within 5 m of one already kept add nothing (a herd, a pair of doors).
     kept = []
     for p in pts:
@@ -151,7 +160,25 @@ def route(git):
         nxt = min(rest, key=lambda p: math.dist(where(p), where(stops[-1])))
         rest.remove(nxt)
         stops.append(nxt)
-    return {'stops': [[round(v, 2) for v in p] for p in stops], 'encounters': encounters}
+    return [[round(v, 2) for v in p] for p in stops]
+
+
+def walk_shot(area, git):
+    """A walkthrough of an area (DIRECTOR_SHOTS entry)."""
+    return {'name': area, 'area': area, 'kind': 'walk', 'stops': route(git), 'encounters': encounters(git)}
+
+
+def spot_shot(area, git, where_):
+    """A shot circling one place in an area: where_ is "X,Y" or an object's tag."""
+    shot = {'area': area, 'kind': 'spot', 'encounters': encounters(git)}
+    m = re.fullmatch(r'\s*(-?[0-9.]+)\s*,\s*(-?[0-9.]+)\s*', where_)
+    if m:
+        shot['at'] = [float(m.group(1)), float(m.group(2))]
+        shot['name'] = f'{area}-{round(float(m.group(1)))}-{round(float(m.group(2)))}'
+    else:
+        shot['tag'] = where_
+        shot['name'] = f'{area}-{re.sub(r"[^A-Za-z0-9_-]", "", where_).lower()}'
+    return shot
 
 
 # ---------------------------------------------------------------- the module copy
@@ -207,14 +234,16 @@ def prepare(args, game, work):
         die('the module already has a script named dir_load')
 
     areas = area_files(unpacked)
-    wanted = [a.strip().lower() for a in args.areas.split(',') if a.strip()]
-    missing = [a for a in wanted if a not in areas]
-    if missing:
-        die(f'not in the module: {", ".join(missing)} (director.py areas {args.module} lists them)')
-    routes = {a: route(gff(areas[a] + '.git')) for a in wanted}
-    for a in wanted:
-        if len(routes[a]['stops']) < 2:
-            log(f'{a} has no exits to walk between; it will be skipped')
+    shots = []
+    for spec in args.shot_specs:
+        kind, area, where_ = spec
+        if area not in areas:
+            die(f'no area {area} in the module (director.py areas {args.module} lists them)')
+        git = gff(areas[area] + '.git')
+        shot = walk_shot(area, git) if kind == 'walk' else spot_shot(area, git, where_)
+        if kind == 'walk' and len(shot['stops']) < 2:
+            log(f'{area} has no exits to walk between; it will be skipped')
+        shots.append(shot)
 
     ifo_path = os.path.join(unpacked, 'module.ifo')
     ifo = gff(ifo_path)
@@ -223,16 +252,15 @@ def prepare(args, game, work):
     if missing:
         die(f'haks the module needs are not in {args.hak_dir}: {", ".join(missing)} (--hak-dir)')
     set_var(ifo, 'DIRECTOR_ONLOAD', 3, ifo.get('Mod_OnModLoad', {}).get('value', ''))
-    set_var(ifo, 'DIRECTOR_AREAS', 3, ','.join(wanted))
-    set_var(ifo, 'DIRECTOR_ROUTES', 3, json.dumps(routes, separators=(',', ':')))
+    set_var(ifo, 'DIRECTOR_SHOTS', 3, json.dumps(shots, separators=(',', ':')))
     set_var(ifo, 'DIRECTOR_SECONDS', 2, float(args.seconds))
     set_var(ifo, 'DIRECTOR_RUN', 1, 1 if args.run else 0)
     ifo['Mod_OnModLoad'] = {'type': 'resref', 'value': 'dir_load'}
     write_gff(ifo, ifo_path)
-    first = next((a for a in wanted if len(routes[a]['stops']) >= 2), None)
-    if not first:
-        die('none of the areas has exits to walk between')
-    add_anchor(game, work, areas[first] + '.git', *routes[first]['stops'][0][:2])
+    # The anchor only has to spawn: the middle of the first shot's area will do.
+    are = gff(areas[shots[0]['area']] + '.are')
+    add_anchor(game, work, areas[shots[0]['area']] + '.git',
+               are['Width']['value'] * 5.0, are['Height']['value'] * 5.0)
 
     run(['nwn_script_comp', '--quiet', '--root', game, '-o', os.path.join(unpacked, 'dir_load.ncs'),
          os.path.join(HERE, 'nss', 'dir_load.nss')])
@@ -245,7 +273,7 @@ def prepare(args, game, work):
         with open(os.path.join(home, 'settings.tml'), 'w') as f:
             f.write('[nwscript]\n\t[nwscript.log]\n\t\t[nwscript.log.script-execution]\n\t\t\tenabled = true\n')
     mod = os.path.join(home, 'modules', 'director.mod')
-    log(f'packing the copy ({len(wanted)} areas)')
+    log(f'packing the copy ({len(shots)} shots)')
     run(['nwn_erf', '--quiet', '-c', '-e', 'MOD', '-f', mod] + sorted(glob.glob(os.path.join(unpacked, '*'))))
     return home
 
@@ -504,9 +532,11 @@ def main():
 
     f = sub.add_parser('film', help='film walkthroughs of areas')
     f.add_argument('module', help='the .mod to film (it is copied, never changed)')
-    f.add_argument('--areas', required=True, help='area resrefs, comma-separated, in filming order')
+    f.add_argument('--areas', help='walkthroughs: area resrefs, comma-separated, in filming order')
+    f.add_argument('--spot', action='append', default=[], metavar='AREA@X,Y|AREA@TAG',
+                   help='circle one place: a point in an area, or an object by tag (repeatable)')
     f.add_argument('--character', required=True, help="the cameraman's character (.bic)")
-    f.add_argument('--seconds', type=float, default=45, help='seconds to film each area at most (45)')
+    f.add_argument('--seconds', type=float, default=45, help='seconds to film each shot at most (45)')
     f.add_argument('--run', action='store_true', help='the walker runs instead of walking')
     f.add_argument('--out', help='folder for the videos (out/<date-time>)')
     f.add_argument('--game', help='NWN:EE install folder (found by itself in the usual places)')
@@ -529,6 +559,14 @@ def main():
         args.tlk_dir = os.path.expanduser(args.tlk_dir or os.path.join(user, 'tlk'))
         if not os.path.exists(args.character):
             die(f'no character at {args.character}')
+        args.shot_specs = [('walk', a.strip().lower(), None) for a in (args.areas or '').split(',') if a.strip()]
+        for spot in args.spot:
+            area, sep, where_ = spot.partition('@')
+            if not sep or not area or not where_:
+                die(f'--spot {spot}: expected AREA@X,Y or AREA@TAG')
+            args.shot_specs.append(('spot', area.strip().lower(), where_.strip()))
+        if not args.shot_specs:
+            die('nothing to film: give --areas and/or --spot')
     args.func(args)
 
 
