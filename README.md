@@ -9,8 +9,11 @@ sound.
 - **Walkthroughs** of whole areas, to cut into a trailer or a montage.
 - **Spots**: a slow circle around one place (a point, or an object by tag), to see what is
   really there when triaging a bug report.
+- **Events**: a spot where something happens a few seconds in: a script of the module, or a
+  line of NWScript you give it (open a door, cast a spell, spawn a creature), so the clip shows
+  what the engine really does.
 
-Early days: more kinds of shots are planned (events: a script run while the camera rolls).
+Early days: more kinds of shots are planned.
 
 ## What it does
 
@@ -32,7 +35,7 @@ Early days: more kinds of shots are planned (events: a script run while the came
    it steps into every encounter so the area's monsters and wildlife spawn. The time is
    set to 10:00 with clear weather.
 6. **Records** each shot with ffmpeg (`<area>.mp4` for a walkthrough, `<area>-<x>-<y>.mp4` or
-   `<area>-<tag>.mp4` for a spot), then closes everything.
+   `<area>-<tag>.mp4` for a spot, with `-event` added for an event), then closes everything.
 
 ## Requirements
 
@@ -65,7 +68,18 @@ The server image must match your client's version (`--image`).
 ./director.py film ~/modules/mymodule.mod \
     --spot townsquare@inn_door --spot lakeshore@120,87 --seconds 20 \
     --character ~/.local/share/Neverwinter\ Nights/localvault/somechar.bic
+
+# The inn door opening, and a fireball at a point, 3 seconds into each shot.
+./director.py film ~/modules/mymodule.mod \
+    --event 'townsquare@inn_door=AssignCommand(OBJECT_SELF, ActionOpenDoor(OBJECT_SELF));' \
+    --event 'lakeshore@100,80=ApplyEffectAtLocation(DURATION_TYPE_INSTANT, EffectVisualEffect(VFX_FNF_FIREBALL), GetLocation(OBJECT_SELF));' \
+    --seconds 15 --character ~/.local/share/Neverwinter\ Nights/localvault/somechar.bic
 ```
+
+An event's code is NWScript statements (run as `void main() { ... }`, base game functions only)
+or the name of a script the module has. `OBJECT_SELF` is the tagged object, or for a point the
+invisible walker standing there. The code is compiled before anything starts, so a mistake stops
+at once with the compiler's message.
 
 The videos land in `out/<date-time>/`. Any character works as the cameraman: it is never seen.
 
@@ -75,6 +89,7 @@ Options (`./director.py film --help` for all of them):
 |---|---|
 | `--areas A,B` | walkthroughs of these areas, in this order |
 | `--spot AREA@X,Y` / `--spot AREA@TAG` | circle a point, or an object by tag (repeatable) |
+| `--event AREA@X,Y=CODE` / `--event AREA@TAG=CODE` | a spot where CODE runs 3 seconds in (repeatable) |
 | `--seconds N` | film each shot for at most N seconds (default 45) |
 | `--run` | the walker runs instead of walking |
 | `--out DIR` | where the videos go |

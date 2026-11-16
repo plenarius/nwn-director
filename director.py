@@ -2,13 +2,14 @@
 """nwn-director: film the areas of a Neverwinter Nights: Enhanced Edition module.
 
     director.py film MODULE.mod [--areas AREA[,AREA...]] [--spot AREA@X,Y|AREA@TAG ...]
-                                --character CHAR.bic [options]
+                                [--event AREA@X,Y=CODE|AREA@TAG=CODE ...] --character CHAR.bic [options]
     director.py areas MODULE.mod
 
 `film` copies the module with nwn-director's script in it, runs the copy on a local server
 (Docker), logs your game client in as the cameraman and records every shot to OUT/<name>.mp4:
-a walkthrough of each area in --areas (<area>.mp4), and a slow circle around each --spot
-(<area>-<x>-<y>.mp4 or <area>-<tag>.mp4).
+a walkthrough of each area in --areas (<area>.mp4), a slow circle around each --spot
+(<area>-<x>-<y>.mp4 or <area>-<tag>.mp4), and the same for each --event, with its CODE run a
+few seconds in (<area>-<x>-<y>-event.mp4 or <area>-<tag>-event.mp4).
 `areas` lists the module's areas (resref, tag, size, exits) to choose from.
 
 See README.md for requirements and how it works.
@@ -168,8 +169,9 @@ def walk_shot(area, git):
     return {'name': area, 'area': area, 'kind': 'walk', 'stops': route(git), 'encounters': encounters(git)}
 
 
-def spot_shot(area, git, where_):
-    """A shot circling one place in an area: where_ is "X,Y" or an object's tag."""
+def spot_shot(area, git, where_, event=None):
+    """A shot circling one place in an area: where_ is "X,Y" or an object's tag. An event (a script
+    name, or NWScript statements) runs a few seconds in."""
     shot = {'area': area, 'kind': 'spot', 'encounters': encounters(git)}
     m = re.fullmatch(r'\s*(-?[0-9.]+)\s*,\s*(-?[0-9.]+)\s*', where_)
     if m:
@@ -178,6 +180,9 @@ def spot_shot(area, git, where_):
     else:
         shot['tag'] = where_
         shot['name'] = f'{area}-{re.sub(r"[^A-Za-z0-9_-]", "", where_).lower()}'
+    if event:
+        shot['event'] = event
+        shot['name'] += '-event'
     return shot
 
 
@@ -224,23 +229,47 @@ def write_gff(data, path):
     os.remove(path + '.json')
 
 
+def compile_event(game, unpacked, event, n):
+    """An event's script: a script the module already has, by name, or the event's NWScript
+    statements compiled now (against the base game, as void main() { ... }) into dir_ev<n>, so a
+    mistake stops here with the compiler's message rather than in the middle of filming."""
+    if re.fullmatch(r'[A-Za-z0-9_]{1,16}', event):
+        if not os.path.exists(os.path.join(unpacked, event.lower() + '.ncs')):
+            die(f'--event: the module has no compiled script named {event}')
+        return event.lower()
+    name = f'dir_ev{n}'
+    src = os.path.join(unpacked, name + '.nss')
+    with open(src, 'w') as f:
+        f.write('void main()\n{\n' + event + '\n}\n')
+    result = subprocess.run(['nwn_script_comp', '--quiet', '--root', game, '-o',
+                             os.path.join(unpacked, name + '.ncs'), src], capture_output=True, text=True)
+    os.remove(src)
+    if result.returncode != 0 or not os.path.exists(os.path.join(unpacked, name + '.ncs')):
+        die(f'--event code does not compile:\n  {event}\n' + (result.stdout + result.stderr).strip())
+    return name
+
+
 def prepare(args, game, work):
     """Copy the module with dir_load as its OnModuleLoad and the walkthroughs in module variables.
     Returns the copy's path."""
     unpacked = os.path.join(work, 'module')
     log(f'unpacking {args.module}')
     unpack(args.module, unpacked)
-    if os.path.exists(os.path.join(unpacked, 'dir_load.ncs')):
-        die('the module already has a script named dir_load')
+    ours = [os.path.basename(f) for f in glob.glob(os.path.join(unpacked, 'dir_*.ncs'))
+            if re.fullmatch(r'dir_(load|ev\d+)\.ncs', os.path.basename(f))]
+    if ours:
+        die(f'the module already has scripts named like nwn-director\'s: {", ".join(ours)}')
 
     areas = area_files(unpacked)
     shots = []
     for spec in args.shot_specs:
-        kind, area, where_ = spec
+        kind, area, where_, event = spec
         if area not in areas:
             die(f'no area {area} in the module (director.py areas {args.module} lists them)')
         git = gff(areas[area] + '.git')
-        shot = walk_shot(area, git) if kind == 'walk' else spot_shot(area, git, where_)
+        if event:
+            event = compile_event(game, unpacked, event, len(shots))
+        shot = walk_shot(area, git) if kind == 'walk' else spot_shot(area, git, where_, event)
         if kind == 'walk' and len(shot['stops']) < 2:
             log(f'{area} has no exits to walk between; it will be skipped')
         shots.append(shot)
@@ -490,7 +519,7 @@ def cmd_film(args):
 
         # Markers come at least every area (the longest wait is --seconds plus loading).
         for line in slog.lines(args.seconds + 120):
-            m = re.search(r'DIRECTOR: (ROLL|CUT|END|skip)(.*)', line)
+            m = re.search(r'DIRECTOR: (ROLL|CUT|END|skip|event)(.*)', line)
             if not m:
                 continue
             what, rest = m.group(1), m.group(2).strip()
@@ -502,8 +531,8 @@ def cmd_film(args):
                 recorder.send_signal(signal.SIGINT)
                 recorder.wait()
                 recorder = None
-            elif what == 'skip':
-                log('skip ' + rest)
+            elif what in ('skip', 'event'):
+                log(f'{what} {rest}')
             elif what == 'END':
                 break
     finally:
@@ -535,6 +564,10 @@ def main():
     f.add_argument('--areas', help='walkthroughs: area resrefs, comma-separated, in filming order')
     f.add_argument('--spot', action='append', default=[], metavar='AREA@X,Y|AREA@TAG',
                    help='circle one place: a point in an area, or an object by tag (repeatable)')
+    f.add_argument('--event', action='append', default=[], metavar='AREA@X,Y=CODE|AREA@TAG=CODE',
+                   help='a spot where CODE runs a few seconds in: a script of the module, or NWScript '
+                        'statements (checked before filming), with OBJECT_SELF the tagged object (or the '
+                        'invisible walker at the point) (repeatable)')
     f.add_argument('--character', required=True, help="the cameraman's character (.bic)")
     f.add_argument('--seconds', type=float, default=45, help='seconds to film each shot at most (45)')
     f.add_argument('--run', action='store_true', help='the walker runs instead of walking')
@@ -559,12 +592,19 @@ def main():
         args.tlk_dir = os.path.expanduser(args.tlk_dir or os.path.join(user, 'tlk'))
         if not os.path.exists(args.character):
             die(f'no character at {args.character}')
-        args.shot_specs = [('walk', a.strip().lower(), None) for a in (args.areas or '').split(',') if a.strip()]
+        args.shot_specs = [('walk', a.strip().lower(), None, None)
+                           for a in (args.areas or '').split(',') if a.strip()]
         for spot in args.spot:
             area, sep, where_ = spot.partition('@')
             if not sep or not area or not where_:
                 die(f'--spot {spot}: expected AREA@X,Y or AREA@TAG')
-            args.shot_specs.append(('spot', area.strip().lower(), where_.strip()))
+            args.shot_specs.append(('spot', area.strip().lower(), where_.strip(), None))
+        for event in args.event:
+            place, sep, code = event.partition('=')
+            area, sep2, where_ = place.partition('@')
+            if not sep or not sep2 or not area or not where_ or not code.strip():
+                die(f'--event {event}: expected AREA@X,Y=CODE or AREA@TAG=CODE')
+            args.shot_specs.append(('spot', area.strip().lower(), where_.strip(), code.strip()))
         if not args.shot_specs:
             die('nothing to film: give --areas and/or --spot')
     args.func(args)
