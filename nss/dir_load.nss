@@ -11,13 +11,17 @@
 // gets recorded), then films every shot in DIRECTOR_SHOTS in turn. The camera follows an
 // invisible walker (appearance.2da row 298, Invisible_Human_Male, base game):
 //   walk  the walker walks the area's route and the camera follows it from behind at eye level
-//   spot  the walker stands at a place (a point, or an object by tag) and the camera circles it
+//   spot  the walker stands at a place (a point, or an object by tag) and the camera circles it;
+//         with an "event", that runs DIRECTOR_EVENT_DELAY seconds in, so the clip shows before
+//         and after
 //
 // Module variables (set by director.py):
 //   DIRECTOR_ONLOAD  string  the module's own OnModuleLoad script
 //   DIRECTOR_SHOTS   string  JSON list of shots, each {"name", "area", "kind": "walk" | "spot",
 //                            "encounters": [[x, y], ...], and for a walk "stops": [[x, y], ...],
-//                            for a spot "at": [x, y] or "tag": "TAG"}
+//                            for a spot "at": [x, y] or "tag": "TAG", and maybe "event": the script
+//                            to run (the module's, or dir_ev<n>: the event's code, compiled by
+//                            director.py)}
 //   DIRECTOR_SECONDS float   seconds to film each shot at most
 //   DIRECTOR_RUN     int     TRUE: the walker runs
 //
@@ -27,6 +31,7 @@
 //   "DIRECTOR: ROLL <name>"  start recording <name>.mp4
 //   "DIRECTOR: CUT"          stop recording
 //   "DIRECTOR: END"          all shots done
+//   "DIRECTOR: event ..."    an event ran
 
 const int DIRECTOR_WALKER_APPEARANCE = 298; // appearance.2da Invisible_Human_Male
 const float DIRECTOR_TICK = 1.0;            // seconds between camera updates
@@ -36,6 +41,7 @@ const float DIRECTOR_WALK_DIST = 7.0;
 const float DIRECTOR_WALK_PITCH = 78.0;
 const float DIRECTOR_SPOT_DIST = 9.0;
 const float DIRECTOR_SPOT_PITCH = 68.0;
+const float DIRECTOR_EVENT_DELAY = 3.0;     // seconds into a spot before its event runs
 
 void Dir_Log(string sMsg)
 {
@@ -219,6 +225,19 @@ void Dir_Keep(object oCam, object oWalker)
 
 void Dir_DoShot(object oCam, int nShot);
 
+// A spot's event (a script: the module's, or the event's code compiled by director.py), run on
+// the tagged object, or on the walker standing at the point.
+void Dir_Event(object oWalker, object oArea, json jShot)
+{
+    string sScript = Dir_ShotString(jShot, "event");
+    object oSelf = oWalker;
+    string sTag = Dir_ShotString(jShot, "tag");
+    if (sTag != "")
+        oSelf = Dir_Tagged(oArea, sTag);
+    ExecuteScript(sScript, oSelf);
+    Dir_Log("event ran " + sScript);
+}
+
 // Every tick while rolling: walks follow the walker from behind, spots circle it once over the shot.
 void Dir_Track(object oCam, object oWalker, int nShot, int bWalk, float fElapsed)
 {
@@ -277,7 +296,11 @@ void Dir_Roll(object oCam, object oWalker, object oArea, int nShot)
             CAMERA_TRANSITION_TYPE_SNAP));
     }
     else
+    {
         DelayCommand(0.5, Dir_Cam(oCam, 0.0, DIRECTOR_SPOT_DIST, DIRECTOR_SPOT_PITCH, CAMERA_TRANSITION_TYPE_SNAP));
+        if (Dir_ShotString(jShot, "event") != "")
+            DelayCommand(1.5 + DIRECTOR_EVENT_DELAY, Dir_Event(oWalker, oArea, jShot));
+    }
     DelayCommand(1.5, Dir_Action(oCam, oWalker, nShot, bWalk, Dir_ShotString(jShot, "name")));
 }
 
