@@ -16,12 +16,14 @@ import glob
 import json
 import math
 import os
+import queue
 import re
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -235,27 +237,45 @@ def start_server(args, home):
 
 
 class ServerLog:
-    """The server's log, line by line, as the image mirrors it to stdout."""
+    """The server's log, line by line, as the image mirrors it to stdout. Read on a thread, so
+    waiting for a line can time out."""
 
     def __init__(self):
         self.proc = subprocess.Popen(['docker', 'logs', '-f', CONTAINER], stdout=subprocess.PIPE,
                                      stderr=subprocess.STDOUT, text=True, errors='replace')
+        self.queue = queue.Queue()
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _read(self):
+        for line in self.proc.stdout:
+            self.queue.put(line.strip())
+        self.queue.put(None)
+
+    def next(self, timeout):
+        """The next line, or '' if none came within timeout seconds."""
+        try:
+            line = self.queue.get(timeout=timeout)
+        except queue.Empty:
+            return ''
+        if line is None:
+            die('the server stopped; see: docker logs nwn-director')
+        return line
 
     def wait_for(self, pattern, timeout):
         end = time.time() + timeout
         while time.time() < end:
-            line = self.proc.stdout.readline()
-            if not line:
-                if self.proc.poll() is not None:
-                    die('the server stopped; see: docker logs nwn-director')
-                continue
-            if re.search(pattern, line):
-                return line.strip()
-        die(f'timed out waiting for "{pattern}" in the server log')
+            line = self.next(end - time.time())
+            if line and re.search(pattern, line):
+                return line
+        die(f'timed out waiting for "{pattern}" in the server log (docker logs nwn-director)')
 
-    def lines(self):
-        for line in self.proc.stdout:
-            yield line.strip()
+    def lines(self, quiet_timeout):
+        """Lines until none comes for quiet_timeout seconds."""
+        while True:
+            line = self.next(quiet_timeout)
+            if not line:
+                die(f'the server log went quiet for {quiet_timeout} s (docker logs nwn-director)')
+            yield line
 
     def close(self):
         self.proc.kill()
@@ -407,7 +427,8 @@ def cmd_film(args):
         subprocess.run(['xdotool', 'mousemove', str(w - 1), str(h - 1)])
         slog.wait_for(r'DIRECTOR: cameraman in', 120)
 
-        for line in slog.lines():
+        # Markers come at least every area (the longest wait is --seconds plus loading).
+        for line in slog.lines(args.seconds + 120):
             m = re.search(r'DIRECTOR: (ROLL|CUT|END|skip)(.*)', line)
             if not m:
                 continue

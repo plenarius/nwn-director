@@ -161,11 +161,12 @@ object Dir_Walker(location lLoc)
     return oWalker;
 }
 
-// The cameraman stays out of shot (invisible, no collision) and in cutscene mode (no interface).
+// The cameraman stays out of shot (invisible, no collision), unnoticed (ethereal: Greater
+// Sanctuary, so nothing attacks it), and in cutscene mode (no interface).
 void Dir_Hide(object oCam)
 {
-    effect eHide = SupernaturalEffect(EffectLinkEffects(
-        EffectVisualEffect(VFX_DUR_CUTSCENE_INVISIBILITY), EffectCutsceneGhost()));
+    effect eHide = SupernaturalEffect(EffectLinkEffects(EffectEthereal(), EffectLinkEffects(
+        EffectVisualEffect(VFX_DUR_CUTSCENE_INVISIBILITY), EffectCutsceneGhost())));
     ApplyEffectToObject(DURATION_TYPE_PERMANENT, eHide, oCam);
     SetCutsceneMode(oCam, TRUE);
 }

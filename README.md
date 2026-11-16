@@ -18,8 +18,9 @@ Early days: walkthroughs are all it does so far. More kinds of shots are planned
 4. **Starts your game client** from its own settings folder (made from yours, so your settings
    are never touched) and logs in with the character you give it.
 5. **Films each area:** an invisible walker (appearance 298, `Invisible_Human_Male`, base game)
-   walks the route and the camera follows it from behind at eye level. Before rolling, the
-   cameraman steps into every encounter so the area's monsters and wildlife spawn. The time is
+   walks the route and the camera follows it from behind at eye level. The cameraman is
+   invisible and ethereal (Greater Sanctuary), so nothing notices or attacks it. Before rolling,
+   it steps into every encounter so the area's monsters and wildlife spawn. The time is
    set to 10:00 with clear weather.
 6. **Records** each area to `<area>.mp4` with ffmpeg, then closes everything.
 
