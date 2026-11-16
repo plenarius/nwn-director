@@ -11,7 +11,10 @@ Early days: walkthroughs are all it does so far. More kinds of shots are planned
 ## What it does
 
 1. **Copies the module** (your `.mod` is never changed) with nwn-director's script `dir_load` as
-   its OnModuleLoad. The module's own load script still runs.
+   its OnModuleLoad (the module's own load script still runs) and as the spawn script of an
+   invisible anchor creature in the first area to film. The anchor starts the director while the
+   module loads, so it works even when a framework (like the Core Framework) takes over the
+   module's events, or when the module's own load script stops partway.
 2. **Plans a route through each area** from the module's own area files: every exit, every
    placed creature and every encounter spawn point, nearest first, starting from an exit.
 3. **Runs the copy on a plain server** in Docker (no NWNX, no database), on `127.0.0.1` only.

@@ -1,8 +1,12 @@
 // dir_load: nwn-director's module load script (see README.md).
 //
-// director.py makes a copy of a module with this script as its OnModuleLoad. It runs the module's
-// own load script first (module variable DIRECTOR_ONLOAD), then waits for the cameraman: the game
-// client that renders the walkthroughs and gets recorded. Once it is in, every area in
+// director.py makes a copy of a module with this script in two places: as its OnModuleLoad (which
+// still runs the module's own load script, module variable DIRECTOR_ONLOAD), and as the spawn
+// script of an invisible anchor creature in the first area to film. Whichever runs first starts
+// the director. The anchor is there for modules whose framework takes over the module's events
+// before they load (the Core Framework does): it spawns while the module loads, and nothing has
+// hooked it. Once started, the director waits for the cameraman: the game client that renders the
+// walkthroughs and gets recorded. Once it is in, every area in
 // DIRECTOR_AREAS is filmed in turn: an invisible walker (appearance.2da row 298,
 // Invisible_Human_Male, base game) walks the area's route in DIRECTOR_ROUTES and the camera
 // follows it from behind at eye level.
@@ -289,13 +293,33 @@ void Dir_Wait(int nTries)
     DelayCommand(1.0, Dir_Wait(nTries + 1));
 }
 
+// Start the director once (run on the module, so it outlives the anchor). The first delayed
+// command only runs once the module has finished loading and the server is running.
+void Dir_Start()
+{
+    object oModule = GetModule();
+    if (GetLocalInt(oModule, "DIRECTOR_STARTED"))
+        return;
+    SetLocalInt(oModule, "DIRECTOR_STARTED", TRUE);
+    DelayCommand(1.0, Dir_Log("module loaded"));
+    DelayCommand(2.0, Dir_Wait(0));
+}
+
 void main()
 {
-    // Our own start first: the module's load script runs last, so if it aborts (a module built for
-    // NWNX or a database it doesn't have here), filming still starts.
-    Dir_Log("module loaded");
-    DelayCommand(2.0, Dir_Wait(0));
-    string sOnLoad = GetLocalString(GetModule(), "DIRECTOR_ONLOAD");
+    object oModule = GetModule();
+    if (OBJECT_SELF != oModule)
+    {
+        // The anchor's spawn.
+        AssignCommand(oModule, Dir_Start());
+        DestroyObject(OBJECT_SELF);
+        return;
+    }
+    // The module's load: start (if the anchor hasn't), then the module's own load script, last,
+    // so that if it aborts (a module built for NWNX or a database it doesn't have here) filming
+    // still starts.
+    Dir_Start();
+    string sOnLoad = GetLocalString(oModule, "DIRECTOR_ONLOAD");
     if (sOnLoad != "")
-        ExecuteScript(sOnLoad, OBJECT_SELF);
+        ExecuteScript(sOnLoad, oModule);
 }

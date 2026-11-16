@@ -167,6 +167,36 @@ def set_var(ifo, name, kind, value):
                   'Value': {'type': vtype, 'value': value}})
 
 
+def add_anchor(game, work, git_path, x, y):
+    """Place the anchor in an area: an invisible, scriptless creature (the base game's nw_commale)
+    whose spawn script is dir_load, so the director starts while the module loads even if a
+    framework takes over the module's own events first."""
+    run(['nwn_resman_extract', '--quiet', '--root', game, '--no-ovr', '-d', work, 'nw_commale.utc'])
+    anchor = gff(os.path.join(work, 'nw_commale.utc'))
+    anchor.pop('__data_type', None)
+    for key in list(anchor):
+        if key.startswith('Script'):
+            anchor[key]['value'] = ''
+    anchor['ScriptSpawn']['value'] = 'dir_load'
+    anchor['Appearance_Type']['value'] = 298
+    anchor['Tag']['value'] = 'DIRECTOR_ANCHOR'
+    anchor['Conversation']['value'] = ''
+    anchor['__struct_id'] = 4
+    for key, value in (('XPosition', x), ('YPosition', y), ('ZPosition', 0.0),
+                       ('XOrientation', 1.0), ('YOrientation', 0.0)):
+        anchor[key] = {'type': 'float', 'value': float(value)}
+    git = gff(git_path)
+    git.setdefault('Creature List', {'type': 'list', 'value': []})['value'].append(anchor)
+    write_gff(git, git_path)
+
+
+def write_gff(data, path):
+    with open(path + '.json', 'w') as f:
+        json.dump(data, f)
+    run(['nwn_gff', '--quiet', '-i', path + '.json', '-l', 'json', '-o', path, '-k', 'gff'])
+    os.remove(path + '.json')
+
+
 def prepare(args, game, work):
     """Copy the module with dir_load as its OnModuleLoad and the walkthroughs in module variables.
     Returns the copy's path."""
@@ -198,10 +228,11 @@ def prepare(args, game, work):
     set_var(ifo, 'DIRECTOR_SECONDS', 2, float(args.seconds))
     set_var(ifo, 'DIRECTOR_RUN', 1, 1 if args.run else 0)
     ifo['Mod_OnModLoad'] = {'type': 'resref', 'value': 'dir_load'}
-    with open(ifo_path + '.json', 'w') as f:
-        json.dump(ifo, f)
-    run(['nwn_gff', '--quiet', '-i', ifo_path + '.json', '-l', 'json', '-o', ifo_path, '-k', 'gff'])
-    os.remove(ifo_path + '.json')
+    write_gff(ifo, ifo_path)
+    first = next((a for a in wanted if len(routes[a]['stops']) >= 2), None)
+    if not first:
+        die('none of the areas has exits to walk between')
+    add_anchor(game, work, areas[first] + '.git', *routes[first]['stops'][0][:2])
 
     run(['nwn_script_comp', '--quiet', '--root', game, '-o', os.path.join(unpacked, 'dir_load.ncs'),
          os.path.join(HERE, 'nss', 'dir_load.nss')])
@@ -233,7 +264,9 @@ def start_server(args, home):
            '-e', 'NWN_SERVERVAULT=0', '-e', 'NWN_ELC=0', '-e', 'NWN_ILR=0',
            '-e', 'NWN_PAUSEANDPLAY=0', '-e', 'NWN_MAXLEVEL=40',
            args.image]
-    run(cmd, capture_output=True)
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        die(f'the server did not start: {result.stderr.strip()} (is something else on port {args.port}? --port)')
 
 
 class ServerLog:
