@@ -608,6 +608,11 @@ def differ(a, b):
     return len(a) != len(b) or sum(abs(x - y) for x, y in zip(a, b)) / len(a) > 1.5
 
 
+# Seconds into the first angle after which a picture that holds will do without the black screen first: a client
+# drawing a frame slower than the black stays up (2 s; seen on a busy CI lane, in a dark interior) never shows it.
+# By then the server has set the camera again 40 times.
+FIRST_STILL_GRACE = 20.0
+
 # Seconds a still's picture must hold before it is saved: a camera easing into place on a slow client changes the
 # picture little from one frame to the next, but a lot over a second.
 STILL_STEADY = 1.0
@@ -617,8 +622,9 @@ def wait_for_angle(limit, previous=None):
     """Wait until the client has drawn the camera's new angle, and it holds (no change over STILL_STEADY). A later
     angle: once the picture differs from the previous angle's (previous: its thumbnail). The first angle: once the
     screen has been black (dir_load blacks it out while it sets the camera, and the client does what the server says
-    in order, so the picture after the black has the camera in place) and isn't any more, nor a loading screen. False
-    if that doesn't happen within limit seconds."""
+    in order, so the picture after the black has the camera in place) and isn't any more, nor a loading screen; or,
+    if no black has shown after FIRST_STILL_GRACE, any picture that holds. False if that doesn't happen within limit
+    seconds."""
     start = time.time()
     seen_black = previous is not None
     held = []   # (time, thumbnail) since the new angle appeared
@@ -627,7 +633,7 @@ def wait_for_angle(limit, previous=None):
         now = time.time()
         if black(thumb):
             seen_black, held = True, []
-        elif loading(thumb) or not seen_black:
+        elif loading(thumb) or not (seen_black or now - start >= FIRST_STILL_GRACE):
             held = []
         elif held or previous is None or differ(thumb, previous):
             held.append((now, thumb))
