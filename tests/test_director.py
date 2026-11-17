@@ -170,8 +170,14 @@ class WaitForAngle(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(polls, 9 + 3)   # the shot, held for a second: three polls
 
-    def test_first_angle_never_black_never_saved(self):
-        self.assertEqual(self.run_frames([self.view(90)] * 5)[0], False)
+    def test_first_angle_never_black_saved_after_the_grace(self):
+        # A slow client that never drew the black: a picture that holds will do after FIRST_STILL_GRACE.
+        ok, polls = self.run_frames([self.view(90)] * 100, limit=60)
+        self.assertTrue(ok)
+        self.assertEqual(polls, int(d.FIRST_STILL_GRACE / 0.5) + 3)
+
+    def test_first_angle_never_black_within_the_grace(self):
+        self.assertEqual(self.run_frames([self.view(90)] * 100, limit=d.FIRST_STILL_GRACE - 1)[0], False)
 
     def test_a_camera_easing_in_is_waited_out(self):
         # 1.0 a poll: under 1.5 from one frame to the next, 2.0 over a second.
