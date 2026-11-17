@@ -65,10 +65,17 @@ object Dir_Area(string sResRef)
     return OBJECT_INVALID;
 }
 
-// Shot n (from 0), or JSON null past the end.
+// Shot n (from 0), or JSON null past the end. The list is parsed once (Dir_Shot runs every tick).
 json Dir_Shot(int n)
 {
-    return JsonArrayGet(JsonParse(GetLocalString(GetModule(), "DIRECTOR_SHOTS")), n);
+    object oModule = GetModule();
+    json jShots = GetLocalJson(oModule, "DIRECTOR_SHOTS");
+    if (JsonGetType(jShots) != JSON_TYPE_ARRAY)
+    {
+        jShots = JsonParse(GetLocalString(oModule, "DIRECTOR_SHOTS"));
+        SetLocalJson(oModule, "DIRECTOR_SHOTS", jShots);
+    }
+    return JsonArrayGet(jShots, n);
 }
 
 string Dir_ShotString(json jShot, string sKey)
