@@ -288,9 +288,13 @@ int Dir_StillsSaved()
 void Dir_Still(object oCam, object oWalker, int nShot, int nAngle);
 
 // Hold the angle until director.py has saved its still (rendering may be far slower than real
-// time), then go on to the next.
+// time), then go on to the next. The camera is set again every time: a slow client that is still
+// loading the area may put it back where it was.
 void Dir_StillWait(object oCam, object oWalker, int nShot, int nAngle, float fWaited)
 {
+    float fStills = IntToFloat(GetLocalInt(GetModule(), "DIRECTOR_STILLS"));
+    Dir_Cam(oCam, Dir_SpotDir(Dir_Shot(nShot), IntToFloat(nAngle), fStills), DIRECTOR_SPOT_DIST,
+        DIRECTOR_SPOT_PITCH, CAMERA_TRANSITION_TYPE_SNAP);
     if (Dir_StillsSaved() >= GetLocalInt(GetModule(), "DIRECTOR_STILLS_ASKED"))
     {
         Dir_Still(oCam, oWalker, nShot, nAngle + 1);
