@@ -483,7 +483,8 @@ def client_settings(src, dst, settings):
                 f.write(f'[{section}]\n')
                 f.writelines(f'{k} = {v}\n' for (s, k), v in settings.items() if s == section)
         return
-    lines = open(src, encoding='utf-8').readlines()
+    with open(src, encoding='utf-8') as fh:
+        lines = fh.readlines()
     section, headers, done = '', {}, set()
     for i, line in enumerate(lines):
         m = re.match(r'\s*\[([^\]]+)\]\s*$', line)
@@ -595,33 +596,46 @@ def loading(thumb):
 STILL_WAIT = 540
 
 
+def black(thumb):
+    """A black screen (dir_load's BlackScreen while it sets the camera for a spot's stills): no picture anywhere,
+    unlike a loading screen."""
+    return len(thumb) == 64 * 36 and max(thumb) < 8
+
+
+def differ(a, b):
+    """Two thumbnails differ: a mean difference over 1.5 in 0 to 255. A turn of the camera makes 15 to 25 at 45
+    degrees; animation in the scene 0.1 to 0.2."""
+    return len(a) != len(b) or sum(abs(x - y) for x, y in zip(a, b)) / len(a) > 1.5
+
+
+# Seconds a still's picture must hold before it is saved: a camera easing into place on a slow client changes the
+# picture little from one frame to the next, but a lot over a second.
+STILL_STEADY = 1.0
+
+
 def wait_for_angle(limit, previous=None):
-    """Wait until the client has drawn the camera's new angle. A turn changes the picture a lot
-    (a mean difference of 15 to 25 in 0 to 255 on a 64x36 thumbnail at 45 degrees), animation
-    hardly (0.1 to 0.2): so after the first angle, until the picture differs from the previous
-    angle's thumbnail by more than 1.5 (a fast client may have turned already). The first angle
-    comes after the area's loading screen, and a slow client draws a few frames there before the
-    camera is set (seen on a CI lane): so until two new frames in a row are alike (differ by 1.5
-    or less: the camera has settled), or nothing new for 10 s (a still scene). False if that
-    doesn't happen within limit seconds."""
+    """Wait until the client has drawn the camera's new angle, and it holds (no change over STILL_STEADY). A later
+    angle: once the picture differs from the previous angle's (previous: its thumbnail). The first angle: once the
+    screen has been black (dir_load blacks it out while it sets the camera, and the client does what the server says
+    in order, so the picture after the black has the camera in place) and isn't any more, nor a loading screen. False
+    if that doesn't happen within limit seconds."""
     start = time.time()
-    last, changes, changed_at = None, 0, 0.0
+    seen_black = previous is not None
+    held = []   # (time, thumbnail) since the new angle appeared
     while time.time() - start < limit:
         thumb = grab()
-        if previous is not None:
-            if len(thumb) == len(previous) and sum(abs(x - y) for x, y in zip(thumb, previous)) / len(thumb) > 1.5:
+        now = time.time()
+        if black(thumb):
+            seen_black, held = True, []
+        elif loading(thumb) or not seen_black:
+            held = []
+        elif held or previous is None or differ(thumb, previous):
+            held.append((now, thumb))
+            before = [t for t in held if t[0] <= now - STILL_STEADY]
+            if before and not differ(thumb, before[-1][1]):
                 return True
-        elif loading(thumb):
-            last, changes = None, 0
-        elif last is None:
-            last, changed_at = thumb, time.time()
-        elif thumb != last:
-            moved = sum(abs(x - y) for x, y in zip(thumb, last)) / len(thumb)
-            last, changes, changed_at = thumb, changes + 1, time.time()
-            if changes >= 2 and moved <= 1.5:
-                return True
-        elif time.time() - changed_at > 10.0:
-            return True
+            if before and differ(thumb, before[-1][1]):
+                held = [(now, thumb)]   # still moving: hold from here
         time.sleep(0.5)
     return False
 
