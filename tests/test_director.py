@@ -5,6 +5,7 @@
 import os
 import queue
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -231,6 +232,21 @@ class LogIn(unittest.TestCase):
         with self.assertRaises(SystemExit) as e:
             self.run_log_in(['director (KEY2) Joined as Player 1'], vault_key='KEY1')
         self.assertIn('KEY2', str(e.exception))
+
+
+class StillsDb(unittest.TestCase):
+    def test_fresh_count_and_writable(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            path = d.stills_db(os.path.join(tmp, 'database'))
+            with sqlite3.connect(path) as db:
+                db.execute('UPDATE stills SET n = n + 1')
+            path = d.stills_db(os.path.join(tmp, 'database'))   # made fresh again
+            with sqlite3.connect(path) as db:
+                self.assertEqual(db.execute('SELECT n FROM stills').fetchall(), [(0,)])
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o666)
+        finally:
+            shutil.rmtree(tmp)
 
 
 class ClientSettings(unittest.TestCase):
