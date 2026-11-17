@@ -831,6 +831,14 @@ def film_video(slog, out, size, seconds):
             recorder.wait()
 
 
+def remove_server_files(image, work):
+    """The server writes into its home (work/server: nwsync, the database) as the container's user, root: remove
+    them from a container of the same image, or the work folder is left behind each run."""
+    if os.path.isdir(os.path.join(work, 'server')):
+        subprocess.run(['docker', 'run', '--rm', '-v', f'{work}:/work', '--entrypoint', 'rm', image, '-rf',
+                        '/work/server'], capture_output=True)
+
+
 def check_tools(args):
     tools = ['docker', 'nwn_erf', 'nwn_gff', 'nwn_script_comp', 'ffmpeg', 'xdotool']
     tools += ['Xvfb'] if args.stills else ['xrandr']
@@ -893,6 +901,7 @@ def cmd_film(args):
             xvfb.kill()
         if not args.keep_server:
             subprocess.run(['docker', 'rm', '-f', CONTAINER], capture_output=True)
+            remove_server_files(args.image, work)
         shutil.rmtree(work, ignore_errors=True)
     log(f'done: {out}')
 
