@@ -25,11 +25,15 @@
 //                            module's, or dir_ev<n>: the event's code, compiled by director.py)}
 //   DIRECTOR_SECONDS float   seconds to film each shot at most
 //   DIRECTOR_RUN     int     TRUE: the walker runs
+//   DIRECTOR_STILLS  int     stills instead of video: spots turn through this many angles, each
+//                            held until director.py has saved its still (it counts them in the
+//                            campaign database "director", table stills)
 //
 // A point is [x, y], or [x, y, x2, y2] with a second choice (the two sides of a door).
 //
 // Lines in the server log tell director.py what to do:
-//   "DIRECTOR: ROLL <name>"  start recording <name>.mp4
+//   "DIRECTOR: ROLL <name>"  start recording <name>.mp4 (stills: start shot <name>)
+//   "DIRECTOR: STILL <n>"    stills: the camera is at angle n; save it, then count it
 //   "DIRECTOR: CUT"          stop recording
 //   "DIRECTOR: END"          all shots done
 //   "DIRECTOR: event ..."    an event ran
@@ -239,6 +243,15 @@ void Dir_Event(object oWalker, object oArea, json jShot)
     Dir_Log("event ran " + sScript);
 }
 
+// End a shot: free the camera and go on to the next one.
+void Dir_Cut(object oCam, object oWalker, int nShot)
+{
+    Dir_Log("CUT");
+    AttachCamera(oCam, OBJECT_INVALID);
+    DestroyObject(oWalker, 1.0);
+    DelayCommand(2.0, Dir_DoShot(oCam, nShot + 1));
+}
+
 // A spot's camera direction after fElapsed of fSeconds: one circle, from the shot's facing.
 float Dir_SpotDir(json jShot, float fElapsed, float fSeconds)
 {
@@ -259,20 +272,65 @@ void Dir_Track(object oCam, object oWalker, int nShot, int bWalk, float fElapsed
     Dir_Keep(oCam, oWalker);
     if (GetLocalInt(oWalker, "DIRECTOR_DONE") || fElapsed >= fSeconds)
     {
-        Dir_Log("CUT");
-        AttachCamera(oCam, OBJECT_INVALID);
-        DestroyObject(oWalker, 1.0);
-        DelayCommand(2.0, Dir_DoShot(oCam, nShot + 1));
+        Dir_Cut(oCam, oWalker, nShot);
         return;
     }
     DelayCommand(DIRECTOR_TICK, Dir_Track(oCam, oWalker, nShot, bWalk, fElapsed + DIRECTOR_TICK));
+}
+
+// How many stills director.py has saved, from the campaign database it writes (-1: none there).
+int Dir_StillsSaved()
+{
+    sqlquery q = SqlPrepareQueryCampaign("director", "SELECT n FROM stills");
+    return SqlStep(q) ? SqlGetInt(q, 0) : -1;
+}
+
+void Dir_Still(object oCam, object oWalker, int nShot, int nAngle);
+
+// Hold the angle until director.py has saved its still (rendering may be far slower than real
+// time), then go on to the next.
+void Dir_StillWait(object oCam, object oWalker, int nShot, int nAngle, float fWaited)
+{
+    if (Dir_StillsSaved() >= GetLocalInt(GetModule(), "DIRECTOR_STILLS_ASKED"))
+    {
+        Dir_Still(oCam, oWalker, nShot, nAngle + 1);
+        return;
+    }
+    if (fWaited >= 600.0)
+    {
+        Dir_Log("skip the rest of " + Dir_ShotString(Dir_Shot(nShot), "name") + ": no still saved in 10 minutes");
+        Dir_Cut(oCam, oWalker, nShot);
+        return;
+    }
+    DelayCommand(0.5, Dir_StillWait(oCam, oWalker, nShot, nAngle, fWaited + 0.5));
+}
+
+// Turn the camera to angle nAngle of the shot's DIRECTOR_STILLS and ask for its still.
+void Dir_Still(object oCam, object oWalker, int nShot, int nAngle)
+{
+    object oModule = GetModule();
+    int nStills = GetLocalInt(oModule, "DIRECTOR_STILLS");
+    if (nAngle >= nStills)
+    {
+        Dir_Cut(oCam, oWalker, nShot);
+        return;
+    }
+    Dir_Cam(oCam, Dir_SpotDir(Dir_Shot(nShot), IntToFloat(nAngle), IntToFloat(nStills)), DIRECTOR_SPOT_DIST,
+        DIRECTOR_SPOT_PITCH, CAMERA_TRANSITION_TYPE_SNAP);
+    Dir_Keep(oCam, oWalker);
+    SetLocalInt(oModule, "DIRECTOR_STILLS_ASKED", GetLocalInt(oModule, "DIRECTOR_STILLS_ASKED") + 1);
+    Dir_Log("STILL " + IntToString(nAngle));
+    DelayCommand(0.5, Dir_StillWait(oCam, oWalker, nShot, nAngle, 0.5));
 }
 
 // ROLL, then track: always in this order, so a recording never starts after its CUT.
 void Dir_Action(object oCam, object oWalker, int nShot, int bWalk, string sName)
 {
     Dir_Log("ROLL " + sName);
-    DelayCommand(DIRECTOR_TICK, Dir_Track(oCam, oWalker, nShot, bWalk, DIRECTOR_TICK));
+    if (!bWalk && GetLocalInt(GetModule(), "DIRECTOR_STILLS") > 0)
+        Dir_Still(oCam, oWalker, nShot, 0);
+    else
+        DelayCommand(DIRECTOR_TICK, Dir_Track(oCam, oWalker, nShot, bWalk, DIRECTOR_TICK));
 }
 
 void Dir_Roll(object oCam, object oWalker, object oArea, int nShot)
