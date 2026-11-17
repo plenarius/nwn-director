@@ -510,8 +510,9 @@ def wait_for_angle(limit, previous=None):
     (a mean difference of 15 to 25 in 0 to 255 on a 64x36 thumbnail at 45 degrees), animation
     hardly (0.1 to 0.2): so after the first angle, until the picture differs from the previous
     angle's thumbnail by more than 1.5 (a fast client may have turned already). The first angle
-    comes after the area's loading screen: two new frames after that (the first may have started
-    before the camera was set), or nothing new for 10 s (a still scene). False if that
+    comes after the area's loading screen, and a slow client draws a few frames there before the
+    camera is set (seen on a CI lane): so until two new frames in a row are alike (differ by 1.5
+    or less: the camera has settled), or nothing new for 10 s (a still scene). False if that
     doesn't happen within limit seconds."""
     start = time.time()
     last, changes, changed_at = None, 0, 0.0
@@ -525,8 +526,9 @@ def wait_for_angle(limit, previous=None):
         elif last is None:
             last, changed_at = thumb, time.time()
         elif thumb != last:
+            moved = sum(abs(x - y) for x, y in zip(thumb, last)) / len(thumb)
             last, changes, changed_at = thumb, changes + 1, time.time()
-            if changes >= 2:
+            if changes >= 2 and moved <= 1.5:
                 return True
         elif time.time() - changed_at > 10.0:
             return True
