@@ -11,6 +11,7 @@ import tempfile
 import tomllib
 import types
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 import director as d  # noqa: E402
@@ -143,6 +144,51 @@ class Loading(unittest.TestCase):
 
     def test_wrong_size(self):
         self.assertFalse(d.loading(b''))
+
+
+class WaitForAngle(unittest.TestCase):
+    """wait_for_angle against a made-up screen: grab() hands out frames in turn, and time moves 0.5 s a poll."""
+
+    def run_frames(self, frames, previous=None, limit=30):
+        clock = [0.0]
+        seen = []
+
+        def grab(path=None):
+            seen.append(frames[min(len(seen), len(frames) - 1)])
+            return seen[-1]
+
+        fake_time = types.SimpleNamespace(time=lambda: clock[0], sleep=lambda s: clock.__setitem__(0, clock[0] + s))
+        with mock.patch.object(d, 'grab', grab), mock.patch.object(d, 'time', fake_time):
+            return d.wait_for_angle(limit, previous), len(seen)
+
+    def view(self, level):
+        return bytes([level] * (64 * 36))
+
+    def test_first_angle_waits_for_the_black_then_a_steady_picture(self):
+        pre, blk, shot = self.view(90), self.view(0), self.view(140)
+        ok, polls = self.run_frames([pre] * 6 + [blk] * 3 + [shot] * 10)
+        self.assertTrue(ok)
+        self.assertEqual(polls, 9 + 3)   # the shot, held for a second: three polls
+
+    def test_first_angle_never_black_never_saved(self):
+        self.assertEqual(self.run_frames([self.view(90)] * 5)[0], False)
+
+    def test_a_camera_easing_in_is_waited_out(self):
+        # 1.0 a poll: under 1.5 from one frame to the next, 2.0 over a second.
+        easing = [self.view(100 + i) for i in range(8)]
+        ok, polls = self.run_frames([self.view(0)] + easing + [self.view(108)] * 10)
+        self.assertTrue(ok)
+        self.assertGreater(polls, 1 + 8)
+
+    def test_later_angle_once_turned_and_held(self):
+        last, turned = self.view(90), self.view(130)
+        ok, polls = self.run_frames([last] * 4 + [turned] * 10, previous=last)
+        self.assertTrue(ok)
+        self.assertEqual(polls, 4 + 3)
+
+    def test_later_angle_never_turned(self):
+        last = self.view(90)
+        self.assertEqual(self.run_frames([last] * 5, previous=last)[0], False)
 
 
 class ClientSettings(unittest.TestCase):

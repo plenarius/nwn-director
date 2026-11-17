@@ -331,6 +331,10 @@ void Dir_Still(object oCam, object oWalker, int nShot, int nAngle)
     Dir_Keep(oCam, oWalker);
     SetLocalInt(oModule, "DIRECTOR_STILLS_ASKED", GetLocalInt(oModule, "DIRECTOR_STILLS_ASKED") + 1);
     Dir_Log("STILL " + IntToString(nAngle));
+    // The first angle's black lifts a little after it is asked for, so that director.py, reading the log, sees the
+    // black even on a fast client.
+    if (nAngle == 0)
+        DelayCommand(2.0, StopFade(oCam));
     DelayCommand(0.5, Dir_StillWait(oCam, oWalker, nShot, nAngle, 0.5));
 }
 
@@ -348,6 +352,11 @@ void Dir_Roll(object oCam, object oWalker, object oArea, int nShot)
 {
     json jShot = Dir_Shot(nShot);
     int bWalk = Dir_ShotString(jShot, "kind") == "walk";
+    // Stills: black until the camera is set (Dir_Still lifts it). A slow client can take seconds to move the
+    // camera into place; the client does what the server says in order, so the first picture after the black has
+    // it in place, and director.py waits for that.
+    if (!bWalk && GetLocalInt(GetModule(), "DIRECTOR_STILLS") > 0)
+        BlackScreen(oCam);
     SetCameraLimits(oCam, 1.0, 89.0, 1.0, 40.0);
     SetCameraFlags(oCam, CAMERA_FLAG_ENABLE_COLLISION | CAMERA_FLAG_DISABLE_SHAKE | CAMERA_FLAG_DISABLE_SCROLL
         | CAMERA_FLAG_DISABLE_TURN | CAMERA_FLAG_DISABLE_TILT | CAMERA_FLAG_DISABLE_ZOOM);
