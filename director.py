@@ -2,7 +2,8 @@
 """nwn-director: film the areas of a Neverwinter Nights: Enhanced Edition module.
 
     director.py film MODULE.mod [--areas AREA[,AREA...]] [--spot AREA@X,Y[/FACING]|AREA@TAG ...]
-                                [--event AREA@X,Y=CODE|AREA@TAG=CODE ...] --character CHAR.bic [options]
+                                [--event AREA@X,Y=CODE|AREA@TAG=CODE ...] [--stills N]
+                                --character CHAR.bic [options]
     director.py areas MODULE.mod
 
 `film` copies the module with nwn-director's script in it, runs the copy on a local server
@@ -10,7 +11,9 @@
 a walkthrough of each area in --areas (<area>.mp4), a slow circle around each --spot
 (<area>-<x>-<y>.mp4 or <area>-<tag>.mp4), and the same for each --event, with its CODE run a
 few seconds in (<area>-<x>-<y>-event.mp4 or <area>-<tag>-event.mp4). An AREA is a resref or an
-area's tag (as bug reports give it).
+area's tag (as bug reports give it). With --stills N, spots are N stills instead of a video
+(<name>-00.png ... and a contact sheet <name>.png), from a client drawing on the CPU in its own
+virtual display: no GPU, and your desktop is left alone.
 `areas` lists the module's areas (resref, tag, size, exits) to choose from.
 
 See README.md for requirements and how it works.
@@ -26,6 +29,7 @@ import queue
 import re
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -309,6 +313,7 @@ def prepare(args, game, work):
     set_var(ifo, 'DIRECTOR_SHOTS', 3, json.dumps(shots, separators=(',', ':')))
     set_var(ifo, 'DIRECTOR_SECONDS', 2, float(args.seconds))
     set_var(ifo, 'DIRECTOR_RUN', 1, 1 if args.run else 0)
+    set_var(ifo, 'DIRECTOR_STILLS', 1, args.stills)
     ifo['Mod_OnModLoad'] = {'type': 'resref', 'value': 'dir_load'}
     write_gff(ifo, ifo_path)
     # The anchor only has to spawn: the middle of the first shot's area will do.
@@ -321,6 +326,16 @@ def prepare(args, game, work):
 
     home = os.path.join(work, 'server')
     os.makedirs(os.path.join(home, 'modules'))
+    if args.stills:
+        # The count of stills saved, which dir_load reads (SqlPrepareQueryCampaign "director") to
+        # know when to turn to the next angle. Writable by the server's user too.
+        db_dir = os.path.join(home, 'database')
+        os.makedirs(db_dir)
+        os.chmod(db_dir, 0o777)
+        with sqlite3.connect(os.path.join(db_dir, 'director.sqlite3')) as db:
+            db.execute('CREATE TABLE stills (n INTEGER)')
+            db.execute('INSERT INTO stills VALUES (0)')
+        os.chmod(os.path.join(db_dir, 'director.sqlite3'), 0o666)
     if args.script_log:
         # Every script run goes to the server log (docker logs nwn-director), for finding what a
         # module's own scripts do to the walker.
@@ -376,12 +391,14 @@ class ServerLog:
             die('the server stopped; see: docker logs nwn-director')
         return line
 
-    def wait_for(self, pattern, timeout):
+    def wait_for(self, pattern, timeout, fatal=True):
         end = time.time() + timeout
         while time.time() < end:
             line = self.next(end - time.time())
             if line and re.search(pattern, line):
                 return line
+        if not fatal:
+            return None
         die(f'timed out waiting for "{pattern}" in the server log (docker logs nwn-director)')
 
     def lines(self, quiet_timeout):
@@ -439,8 +456,94 @@ def prepare_client(args):
 
 def start_client(args, game, cdir, logfile):
     binary = os.path.join(game, 'bin', 'linux-x86', 'nwmain-linux')
+    env = dict(os.environ)
+    if args.stills:
+        # Drawn on the CPU (Mesa's llvmpipe), with no sound device.
+        env.update(LIBGL_ALWAYS_SOFTWARE='1', GALLIUM_DRIVER='llvmpipe', __GLX_VENDOR_LIBRARY_NAME='mesa',
+                   SDL_AUDIODRIVER='dummy')
     return subprocess.Popen([binary, '-userdirectory', cdir, '+connect', f'127.0.0.1:{args.port}'],
-                            cwd=os.path.dirname(binary), stdout=logfile, stderr=subprocess.STDOUT)
+                            cwd=os.path.dirname(binary), stdout=logfile, stderr=subprocess.STDOUT, env=env)
+
+
+STILLS_SIZE = '1920x1080'
+
+
+def start_display():
+    """A virtual X display of its own for the client (stills): sets DISPLAY, returns the server."""
+    n = 99
+    while os.path.exists(f'/tmp/.X11-unix/X{n}') or os.path.exists(f'/tmp/.X{n}-lock'):
+        n += 1
+    xvfb = subprocess.Popen(['Xvfb', f':{n}', '-screen', '0', STILLS_SIZE + 'x24', '-nolisten', 'tcp'],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for _ in range(50):
+        if os.path.exists(f'/tmp/.X11-unix/X{n}'):
+            os.environ['DISPLAY'] = f':{n}'
+            return xvfb
+        time.sleep(0.1)
+    xvfb.kill()
+    die('the virtual display (Xvfb) did not start')
+
+
+def grab(path=None):
+    """The screen: saved to path, or else a 64x36 grey thumbnail (bytes) to compare frames by."""
+    cmd = ['ffmpeg', '-v', 'error', '-y', '-f', 'x11grab', '-video_size', STILLS_SIZE, '-i', os.environ['DISPLAY'],
+           '-frames:v', '1']
+    if path:
+        return subprocess.run(cmd + [path], capture_output=True).returncode == 0
+    return subprocess.run(cmd + ['-vf', 'scale=64:36:flags=area', '-f', 'rawvideo', '-pix_fmt', 'gray', '-'],
+                          capture_output=True).stdout
+
+
+def loading(thumb):
+    """The area loading screen: a picture in the middle, black above and below it."""
+    return len(thumb) == 64 * 36 and max(thumb[:64 * 6]) < 8 and max(thumb[64 * 30:]) < 8
+
+
+def wait_for_angle(limit, previous=None):
+    """Wait until the client has drawn the camera's new angle. A turn changes the picture a lot
+    (a mean difference of 15 to 25 in 0 to 255 on a 64x36 thumbnail at 45 degrees), animation
+    hardly (0.1 to 0.2): so after the first angle, until the picture differs from the previous
+    angle's thumbnail by more than 1.5 (a fast client may have turned already). The first angle
+    comes after the area's loading screen: two new frames after that (the first may have started
+    before the camera was set), or nothing new for 10 s (a still scene). False if that
+    doesn't happen within limit seconds."""
+    start = time.time()
+    last, changes, changed_at = None, 0, 0.0
+    while time.time() - start < limit:
+        thumb = grab()
+        if previous is not None:
+            if len(thumb) == len(previous) and sum(abs(x - y) for x, y in zip(thumb, previous)) / len(thumb) > 1.5:
+                return True
+        elif loading(thumb):
+            last, changes = None, 0
+        elif last is None:
+            last, changed_at = thumb, time.time()
+        elif thumb != last:
+            last, changes, changed_at = thumb, changes + 1, time.time()
+            if changes >= 2:
+                return True
+        elif time.time() - changed_at > 10.0:
+            return True
+        time.sleep(0.3)
+    return False
+
+
+def contact_sheet(stills, path):
+    """The stills side by side, four to a row."""
+    cols = min(4, len(stills))
+    rows = -(-len(stills) // cols)
+    inputs = sum((['-i', s] for s in stills), [])
+    pad = ''.join(f'[{i}:v]scale=640:-1[s{i}];' for i in range(len(stills)))
+    blank = cols * rows - len(stills)
+    if blank:
+        pad += ''.join(f'color=black:s=640x360:d=1[b{i}];' for i in range(blank))
+    labels = ''.join(f'[s{i}]' for i in range(len(stills))) + ''.join(f'[b{i}]' for i in range(blank))
+    layout = '|'.join(f'{(i % cols) * 640}_{(i // cols) * 360}' for i in range(cols * rows))
+    graph = pad + labels + f'xstack=inputs={cols * rows}:layout={layout}'
+    if cols * rows == 1:
+        graph = '[0:v]scale=640:-1'
+    subprocess.run(['ffmpeg', '-v', 'error', '-y'] + inputs + ['-filter_complex', graph, '-frames:v', '1', path],
+                   check=False)
 
 
 def raise_client():
@@ -514,15 +617,20 @@ def cmd_areas(args):
 
 
 def cmd_film(args):
-    # A locked or sleeping screen is what would be recorded: keep the desktop awake while filming.
-    if not os.environ.get('NWN_DIRECTOR_INHIBITED') and shutil.which('gnome-session-inhibit'):
-        os.environ['NWN_DIRECTOR_INHIBITED'] = '1'
-        os.execvp('gnome-session-inhibit', ['gnome-session-inhibit', '--inhibit', 'idle', '--reason',
-                                            'nwn-director filming', sys.executable] + sys.argv)
-    os.environ.setdefault('DISPLAY', ':0')
-    if screen_locked():
-        die('the screen is locked; unlock it and run again')
-    for tool in ('docker', 'nwn_erf', 'nwn_gff', 'nwn_script_comp', 'ffmpeg', 'xdotool', 'xrandr'):
+    tools = ['docker', 'nwn_erf', 'nwn_gff', 'nwn_script_comp', 'ffmpeg', 'xdotool']
+    if args.stills:
+        tools.append('Xvfb')
+    else:
+        # A locked or sleeping screen is what would be recorded: keep the desktop awake while filming.
+        if not os.environ.get('NWN_DIRECTOR_INHIBITED') and shutil.which('gnome-session-inhibit'):
+            os.environ['NWN_DIRECTOR_INHIBITED'] = '1'
+            os.execvp('gnome-session-inhibit', ['gnome-session-inhibit', '--inhibit', 'idle', '--reason',
+                                                'nwn-director filming', sys.executable] + sys.argv)
+        os.environ.setdefault('DISPLAY', ':0')
+        if screen_locked():
+            die('the screen is locked; unlock it and run again')
+        tools.append('xrandr')
+    for tool in tools:
         if not shutil.which(tool):
             die(f'{tool} not found (README.md lists what is needed)')
     game = find_game(args.game)
@@ -530,7 +638,11 @@ def cmd_film(args):
     os.makedirs(out, exist_ok=True)
 
     work = tempfile.mkdtemp(prefix='nwn-director-')
-    client = recorder = slog = None
+    # The neverwinter.nim tools look for an NWN user folder; on a server or CI runner there may be
+    # none where they look.
+    user = os.path.expanduser(args.user_dir)
+    os.environ.setdefault('NWN_HOME', user if os.path.isdir(user) else work)
+    client = recorder = slog = xvfb = None
     try:
         home = prepare(args, game, work)
         log('starting the server')
@@ -538,32 +650,59 @@ def cmd_film(args):
         slog = ServerLog()
         slog.wait_for(r'DIRECTOR: module loaded', 600)
 
-        log('starting the game client')
+        if args.stills:
+            xvfb = start_display()
+        log('starting the game client' + (' (drawing on the CPU, in a virtual display)' if args.stills else ''))
         cdir = prepare_client(args)
         client = start_client(args, game, cdir, open(os.path.join(out, 'client.log'), 'w'))
         slog.wait_for(r'Joined as Player', 300)
-        time.sleep(4)
-        raise_client()
         # Character list: the only character is selected. Click Play (the panel is a fixed size,
-        # centred, at the default interface scale), then park the pointer in a corner.
-        size = screen_size()
+        # centred, at the default interface scale), then park the pointer in a corner. Again
+        # every 10 s until the cameraman is in: a slow client may not have listed it yet.
+        size = STILLS_SIZE if args.stills else screen_size()
         w, h = (int(n) for n in size.split('x'))
-        subprocess.run(['xdotool', 'mousemove', str(w // 2 + 102), str(h // 2 + 231), 'click', '1'])
-        time.sleep(0.5)
-        subprocess.run(['xdotool', 'mousemove', str(w - 1), str(h - 1)])
-        slog.wait_for(r'DIRECTOR: cameraman in', 120)
+        for attempt in range(12):
+            time.sleep(4 if attempt == 0 else 6)
+            raise_client()
+            subprocess.run(['xdotool', 'mousemove', str(w // 2 + 102), str(h // 2 + 231), 'click', '1'])
+            time.sleep(0.5)
+            subprocess.run(['xdotool', 'mousemove', str(w - 1), str(h - 1)])
+            if slog.wait_for(r'DIRECTOR: cameraman in', 10, fatal=False):
+                break
+        else:
+            die('the cameraman never got into the game (the Play click missed?)')
 
-        # Markers come at least every area (the longest wait is --seconds plus loading).
-        for line in slog.lines(args.seconds + 120):
-            m = re.search(r'DIRECTOR: (ROLL|CUT|END|skip|event)(.*)', line)
+        # Markers come at least every area (the longest wait is --seconds plus loading; for
+        # stills, a slow client loading an area).
+        name, stills, previous = '', [], None
+        db = os.path.join(home, 'database', 'director.sqlite3')
+        for line in slog.lines(max(args.seconds + 120, 600 if args.stills else 0)):
+            m = re.search(r'DIRECTOR: (ROLL|STILL|CUT|END|skip|event)(.*)', line)
             if not m:
                 continue
             what, rest = m.group(1), m.group(2).strip()
             if what == 'ROLL':
                 name = re.sub(r'[^A-Za-z0-9_-]', '', rest)
-                log(f'recording {name}')
-                raise_client()
-                recorder = record(os.path.join(out, name + '.mp4'), size)
+                if args.stills:
+                    log(f'stills of {name}')
+                    stills = []
+                else:
+                    log(f'recording {name}')
+                    raise_client()
+                    recorder = record(os.path.join(out, name + '.mp4'), size)
+            elif what == 'STILL':
+                path = os.path.join(out, f'{name}-{int(rest):02d}.png')
+                # The first still waits for the client to load the area.
+                if not wait_for_angle(120 if stills else 300, previous if stills else None):
+                    log(f'  angle {rest}: the picture did not settle; saved as it was')
+                grab(path)
+                previous = grab()   # the server holds this angle until the count below goes up
+                stills.append(path)
+                with sqlite3.connect(db, timeout=30) as conn:
+                    conn.execute('UPDATE stills SET n = n + 1')
+                log(f'  still {rest}')
+            elif what == 'CUT' and args.stills and stills:
+                contact_sheet(stills, os.path.join(out, name + '.png'))
             elif what == 'CUT' and recorder:
                 recorder.send_signal(signal.SIGINT)
                 recorder.wait()
@@ -582,6 +721,8 @@ def cmd_film(args):
             client.kill()
         if slog:
             slog.close()
+        if xvfb:
+            xvfb.kill()
         if not args.keep_server:
             subprocess.run(['docker', 'rm', '-f', CONTAINER], capture_output=True)
         shutil.rmtree(work, ignore_errors=True)
@@ -607,6 +748,9 @@ def main():
                         'statements (checked before filming), with OBJECT_SELF the tagged object (or the '
                         'invisible walker at the point) (repeatable)')
     f.add_argument('--character', required=True, help="the cameraman's character (.bic)")
+    f.add_argument('--stills', type=int, default=0, metavar='N',
+                   help='spots as N stills (one every 360/N degrees) and a contact sheet instead of a video, '
+                        'drawn on the CPU in a virtual display: no GPU, and your desktop is left alone')
     f.add_argument('--seconds', type=float, default=45, help='seconds to film each shot at most (45)')
     f.add_argument('--run', action='store_true', help='the walker runs instead of walking')
     f.add_argument('--out', help='folder for the videos (out/<date-time>)')
@@ -645,6 +789,10 @@ def main():
             args.shot_specs.append(('spot', area.strip(), where_.strip(), code.strip()))
         if not args.shot_specs:
             die('nothing to film: give --areas and/or --spot')
+        if args.stills < 0:
+            die('--stills needs a number of stills')
+        if args.stills and (args.areas or args.event):
+            die('--stills takes spots only (--spot), not --areas or --event')
     args.func(args)
 
 

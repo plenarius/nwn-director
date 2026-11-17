@@ -14,6 +14,10 @@ sound.
   line of NWScript you give it (open a door, cast a spell, spawn a creature), so the clip shows
   what the engine really does.
 
+Spots can also be taken as **stills** (`--stills N`): N pictures around the place and a contact
+sheet, from a game client drawing on the CPU in a virtual display of its own. That needs no GPU
+and leaves your desktop alone, so it can run on a server.
+
 Early days: more kinds of shots are planned.
 
 ## What it does
@@ -38,10 +42,17 @@ Early days: more kinds of shots are planned.
 6. **Records** each shot with ffmpeg (`<area>.mp4` for a walkthrough, `<area>-<x>-<y>.mp4` or
    `<area>-<tag>.mp4` for a spot, with `-event` added for an event), then closes everything.
 
+   With `--stills N`, the client runs in a virtual display of its own (Xvfb) and draws on the
+   CPU, with no sound. For each spot the camera turns through N angles; the server holds each
+   one until the picture has turned and been saved (`<name>-00.png` ...), then turns to the
+   next. Last comes a contact sheet of them all (`<name>.png`). On 48 cores, 12 stills take
+   about 30 seconds after the area loads; on 4 cores, about 6 seconds a still.
+
 ## Requirements
 
 - **Linux** with an X11 desktop (recording uses `x11grab`), unlocked while it films. It keeps
-  the desktop from idling into the lock screen while it runs (GNOME).
+  the desktop from idling into the lock screen while it runs (GNOME). For `--stills`, no desktop:
+  **Xvfb** and Mesa's software renderer (llvmpipe) instead.
 - **NWN:EE** (Steam, GOG or Beamdog), and the module's haks and TLK in your user folder (or
   give their folders).
 - **Docker**, to run the server (`ghcr.io/urothis/nwserver`, the community server image). The
@@ -75,6 +86,11 @@ The server image must match your client's version (`--image`).
     --spot FortHope_FrH@213.99,60.32/150 --seconds 30 \
     --character ~/.local/share/Neverwinter\ Nights/localvault/somechar.bic
 
+# The same spot as 8 stills (every 45 degrees) and a contact sheet, without the desktop or a GPU.
+./director.py film ~/modules/mymodule.mod \
+    --spot FortHope_FrH@213.99,60.32/150 --stills 8 \
+    --character ~/.local/share/Neverwinter\ Nights/localvault/somechar.bic
+
 # The inn door opening, and a fireball at a point, 3 seconds into each shot.
 ./director.py film ~/modules/mymodule.mod \
     --event 'townsquare@inn_door=AssignCommand(OBJECT_SELF, ActionOpenDoor(OBJECT_SELF));' \
@@ -97,6 +113,7 @@ Options (`./director.py film --help` for all of them):
 | `--areas A,B` | walkthroughs of these areas, in this order |
 | `--spot AREA@X,Y` / `--spot AREA@TAG` | circle a point, or an object by tag (repeatable); add `/FACING` (degrees, 0 east, 90 north) to start the circle looking that way |
 | `--event AREA@X,Y=CODE` / `--event AREA@TAG=CODE` | a spot where CODE runs 3 seconds in (repeatable) |
+| `--stills N` | spots as N stills and a contact sheet instead of a video, drawn on the CPU in a virtual display (spots only) |
 | `--seconds N` | film each shot for at most N seconds (default 45) |
 | `--run` | the walker runs instead of walking |
 | `--out DIR` | where the videos go |
