@@ -495,13 +495,14 @@ def grab(path=None):
 
 
 def loading(thumb):
-    """The area loading screen: a picture and text in the middle, with black all round: the top and bottom 4 rows
-    and the left and right 6 columns of the 64x36 thumbnail (a tip under the picture reaches the bottom sixth at
-    1280x720, so the edges alone)."""
+    """The area loading screen: a picture and text in the middle, with black all round: the left and right 6 columns
+    of the 64x36 thumbnail, and the corners (the outer 12 columns of the top and bottom 4 rows). The loading screen is
+    drawn at a fixed size, so it fills more of a small screen: a tip under the picture reaches the bottom sixth at
+    1280x720, and at 960x540 the area's name and the tip reach the top and bottom rows, but not their corners."""
     if len(thumb) != 64 * 36:
         return False
     rows = [thumb[r * 64:(r + 1) * 64] for r in range(36)]
-    edges = rows[:4] + rows[-4:] + [row[:6] + row[-6:] for row in rows]
+    edges = [row[:12] + row[-12:] for row in rows[:4] + rows[-4:]] + [row[:6] + row[-6:] for row in rows]
     return max(max(e) for e in edges) < 8
 
 
