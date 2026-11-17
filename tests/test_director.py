@@ -191,6 +191,42 @@ class WaitForAngle(unittest.TestCase):
         self.assertEqual(self.run_frames([last] * 5, previous=last)[0], False)
 
 
+class LogIn(unittest.TestCase):
+    """log_in against a made-up server log: each wait for "Joined" gives the next of joins (None: not joined)."""
+
+    def run_log_in(self, joins, vault_key=None):
+        joins = list(joins)
+        restarts = []
+
+        class FakeLog:
+            def wait_for(self, pattern, timeout, fatal=True):
+                if 'Joined' in pattern:
+                    return joins.pop(0) if joins else None
+                return 'DIRECTOR: cameraman in: Bardo'
+
+        with mock.patch.object(d, 'subprocess', mock.Mock()), mock.patch.object(d, 'grab', mock.Mock()), \
+                mock.patch.object(d.time, 'sleep', lambda s: None), mock.patch.object(d, 'log', lambda m: None):
+            d.log_in(FakeLog(), '960x540', vault_key=vault_key, raise_window=False,
+                     restart=lambda: restarts.append(1))
+        return len(restarts)
+
+    def test_joins_first_time(self):
+        self.assertEqual(self.run_log_in(['director (KEY1) Joined as Player 1']), 0)
+
+    def test_refused_once_then_restarted_and_in(self):
+        self.assertEqual(self.run_log_in([None, 'director (KEY1) Joined as Player 1']), 1)
+
+    def test_never_joins(self):
+        with self.assertRaises(SystemExit) as e:
+            self.run_log_in([None, None])
+        self.assertIn('never logged in', str(e.exception))
+
+    def test_character_in_another_keys_vault(self):
+        with self.assertRaises(SystemExit) as e:
+            self.run_log_in(['director (KEY2) Joined as Player 1'], vault_key='KEY1')
+        self.assertIn('KEY2', str(e.exception))
+
+
 class ClientSettings(unittest.TestCase):
     settings = {('graphics.grass', 'mode'): '0', ('graphics.fbo.ssao', 'enabled'): 'false',
                 ('graphics.new', 'thing'): '"x"'}

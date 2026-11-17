@@ -734,18 +734,28 @@ def cmd_areas(args):
                 print(line)
 
 
-def log_in(slog, size, screenshot=None, vault_key=None, raise_window=True):
+# Seconds for the client to join the server after it starts (it takes 5 to 30; a slow CI lane included).
+JOIN_WAIT = 120
+
+
+def log_in(slog, size, screenshot=None, vault_key=None, raise_window=True, restart=None):
     """Get the cameraman into the game: once the client has joined the server, click Play on the character list (its
     only character is selected; the panel is a fixed size, centred, at the default interface scale), again every few
     seconds until the cameraman is in (a slow client may not have listed it yet). Dies saying why if it doesn't get
     in, with the screen saved to screenshot if given. vault_key: the public CD key whose server vault holds the
-    character, if the server keeps one (with another key, Play stays greyed out)."""
+    character, if the server keeps one (with another key, Play stays greyed out). restart: starts the client again
+    (stopping the one running), tried once if it doesn't join: now and then the server can't check the client's CD
+    key with Beamdog's master server ("unable to verify your password") and refuses it, and a second try gets in."""
     def fail(why):
         if screenshot:
             grab(screenshot)
         die(why + (f'; the screen: {os.path.basename(screenshot)}' if screenshot else ''))
 
-    joined = slog.wait_for(r'Joined as Player', 300, fatal=False)
+    joined = slog.wait_for(r'Joined as Player', JOIN_WAIT, fatal=False)
+    if not joined and restart:
+        log(f'the client has not joined the server in {JOIN_WAIT} s; starting it again')
+        restart()
+        joined = slog.wait_for(r'Joined as Player', JOIN_WAIT, fatal=False)
     if not joined:
         fail('the cameraman never got into the game: it never logged in (is the CD key in a game elsewhere? '
              '"still in use")')
@@ -870,7 +880,7 @@ def cmd_film(args):
     # none where they look.
     user = os.path.expanduser(args.user_dir)
     os.environ.setdefault('NWN_HOME', user if os.path.isdir(user) else work)
-    client = slog = xvfb = None
+    clients, slog, xvfb = [], None, None
     try:
         home = prepare(args, game, work)
         log('starting the server')
@@ -882,16 +892,23 @@ def cmd_film(args):
             xvfb = start_display()
         log('starting the game client' + (' (drawing on the CPU, in a virtual display)' if args.stills else ''))
         cdir = prepare_client(args)
-        client = start_client(args, game, cdir, open(os.path.join(out, 'client.log'), 'w'))
+
+        def launch():
+            if clients:
+                clients[-1].kill()
+                clients[-1].wait()
+            clients.append(start_client(args, game, cdir, open(os.path.join(out, 'client.log'), 'a')))
+
+        launch()
         size = STILLS_SIZE if args.stills else screen_size()
         log_in(slog, size, screenshot=os.path.join(out, 'no-cameraman.png') if args.stills else None,
-               raise_window=not args.stills)
+               raise_window=not args.stills, restart=launch)
         if args.stills:
-            take_stills(slog, out, os.path.join(home, 'database', 'director.sqlite3'), client)
+            take_stills(slog, out, os.path.join(home, 'database', 'director.sqlite3'), clients[-1])
         else:
             film_video(slog, out, size, args.seconds)
     finally:
-        if client:
+        for client in clients:
             # SIGKILL: on a normal quit the client crashes tearing down the cameraman's cutscene
             # invisibility effect and leaves a crash dialog on the desktop.
             client.kill()
