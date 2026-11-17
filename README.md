@@ -42,11 +42,13 @@ Early days: more kinds of shots are planned.
 6. **Records** each shot with ffmpeg (`<area>.mp4` for a walkthrough, `<area>-<x>-<y>.mp4` or
    `<area>-<tag>.mp4` for a spot, with `-event` added for an event), then closes everything.
 
-   With `--stills N`, the client runs in a virtual display of its own (Xvfb) and draws on the
-   CPU, with no sound. For each spot the camera turns through N angles; the server holds each
-   one until the picture has turned and been saved (`<name>-00.png` ...), then turns to the
-   next. Last comes a contact sheet of them all (`<name>.png`). On 48 cores, 12 stills take
-   about 30 seconds after the area loads; on 4 cores, about 6 seconds a still.
+   With `--stills N`, the client runs in a virtual display of its own (Xvfb) at 960x540 and draws
+   on the CPU, with no sound and with the settings that cost most on a CPU turned down or off
+   (anti-aliasing, high-quality shaders and lighting, grass, shadows, screen effects). For each
+   spot the camera turns through N angles; the server holds each one until the picture has
+   turned and been saved (`<name>-00.png` ...), then turns to the next. Last comes a contact
+   sheet of them all (`<name>-sheet.png`). On 48 cores, 12 stills take about 30 seconds after
+   the area loads; on 4 busy cores, 8 stills of a town take about 3 minutes.
 
 ## Requirements
 
