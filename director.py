@@ -53,6 +53,7 @@ CLIENT_SETTINGS = {
     ('game.character-generation', 'show-pregenerated'): 'false',
     ('graphics.window', 'mode'): '"borderless"',
     ('graphics.intro.splash', 'enabled'): 'false',
+    ('graphics.movies.intro', 'enabled'): 'false',
     ('graphics.hilite', 'enabled'): 'false',
     ('graphics.general', 'shader-quality'): '"High Quality"',
     ('graphics.effects', 'high-quality'): 'true',
@@ -97,10 +98,9 @@ STILLS_SETTINGS = {
 
 # Only in a settings.tml made from nothing (no player's file: a server or CI runner where nobody has played). A
 # player's client has a name (from Steam, or asked once and kept); without one it stops at "Please Enter a Player
-# Name" before joining. And no intro movie.
+# Name" before joining.
 NEW_SETTINGS = {
     ('client.identity', 'name'): '"director"',
-    ('graphics.movies.intro', 'enabled'): 'false',
 }
 
 
