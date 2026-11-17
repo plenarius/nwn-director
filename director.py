@@ -332,6 +332,22 @@ def compile_event(game, unpacked, event, n):
     return name
 
 
+def stills_db(db_dir):
+    """A fresh count of stills saved, db_dir/director.sqlite3, which dir_load reads (SqlPrepareQueryCampaign
+    "director") to know when to turn to the next angle and take_stills adds to. Writable by the server's user too
+    (another user in its container). Returns its path."""
+    os.makedirs(db_dir, exist_ok=True)
+    os.chmod(db_dir, 0o777)
+    path = os.path.join(db_dir, 'director.sqlite3')
+    if os.path.exists(path):
+        os.remove(path)
+    with sqlite3.connect(path) as db:
+        db.execute('CREATE TABLE stills (n INTEGER)')
+        db.execute('INSERT INTO stills VALUES (0)')
+    os.chmod(path, 0o666)
+    return path
+
+
 def prepare(args, game, work):
     """Copy the module with dir_load as its OnModuleLoad and the walkthroughs in module variables.
     Returns the copy's path."""
@@ -381,15 +397,7 @@ def prepare(args, game, work):
     home = os.path.join(work, 'server')
     os.makedirs(os.path.join(home, 'modules'))
     if args.stills:
-        # The count of stills saved, which dir_load reads (SqlPrepareQueryCampaign "director") to
-        # know when to turn to the next angle. Writable by the server's user too.
-        db_dir = os.path.join(home, 'database')
-        os.makedirs(db_dir)
-        os.chmod(db_dir, 0o777)
-        with sqlite3.connect(os.path.join(db_dir, 'director.sqlite3')) as db:
-            db.execute('CREATE TABLE stills (n INTEGER)')
-            db.execute('INSERT INTO stills VALUES (0)')
-        os.chmod(os.path.join(db_dir, 'director.sqlite3'), 0o666)
+        stills_db(os.path.join(home, 'database'))
     if args.script_log:
         # Every script run goes to the server log (docker logs nwn-director), for finding what a
         # module's own scripts do to the walker.
