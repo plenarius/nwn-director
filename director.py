@@ -184,16 +184,36 @@ def where(p):
     return p[:2]
 
 
-def encounters(git):
-    """The middle of every encounter trigger: the cameraman steps into each before filming, so the
-    area's monsters and wildlife spawn."""
+# A spot sets off only the encounters this close (m): farther ones can't be in its shot, and the cameraman
+# stepping into each takes a second (more on a slow client, which draws every place it goes).
+SPOT_ENCOUNTER_RANGE = 40.0
+
+
+def encounters(git, near=None):
+    """The middle of every encounter trigger (within SPOT_ENCOUNTER_RANGE of near, if given): the
+    cameraman steps into each before filming, so the area's monsters and wildlife spawn."""
     out = []
     for e in git.get('Encounter List', {}).get('value', []):
         geo = e.get('Geometry', {}).get('value', [])
         if geo:
-            out.append([round(e['XPosition']['value'] + sum(p['X']['value'] for p in geo) / len(geo), 2),
-                        round(e['YPosition']['value'] + sum(p['Y']['value'] for p in geo) / len(geo), 2)])
+            pt = [round(e['XPosition']['value'] + sum(p['X']['value'] for p in geo) / len(geo), 2),
+                  round(e['YPosition']['value'] + sum(p['Y']['value'] for p in geo) / len(geo), 2)]
+            if near is None or math.dist(pt, near) <= SPOT_ENCOUNTER_RANGE:
+                out.append(pt)
     return out
+
+
+def tagged_position(git, tag):
+    """(x, y) of the first object tagged tag in an area's .git, or None (placed by a script, say)."""
+    lists = {'Creature List': ('XPosition', 'YPosition'), 'Placeable List': ('X', 'Y'), 'Door List': ('X', 'Y'),
+             'WaypointList': ('XPosition', 'YPosition'), 'StoreList': ('XPosition', 'YPosition'),
+             'TriggerList': ('XPosition', 'YPosition'), 'SoundList': ('XPosition', 'YPosition'),
+             'Encounter List': ('XPosition', 'YPosition')}
+    for name, (kx, ky) in lists.items():
+        for o in git.get(name, {}).get('value', []):
+            if o.get('Tag', {}).get('value') == tag and kx in o:
+                return (o[kx]['value'], o[ky]['value'])
+    return None
 
 
 def route(git):
@@ -229,7 +249,7 @@ def spot_shot(area, git, where_, event=None):
     """A shot circling one place in an area: where_ is "X,Y" or an object's tag, with "/FACING"
     after it to start the circle looking that way (degrees, 0 east, 90 north). An event (a script
     name, or NWScript statements) runs a few seconds in."""
-    shot = {'area': area, 'kind': 'spot', 'encounters': encounters(git)}
+    shot = {'area': area, 'kind': 'spot'}
     m = re.fullmatch(r'(.*?)\s*/\s*(-?[0-9.]+)\s*', where_)
     if m:
         where_ = m.group(1)
@@ -241,6 +261,8 @@ def spot_shot(area, git, where_, event=None):
     else:
         shot['tag'] = where_
         shot['name'] = f'{area}-{re.sub(r"[^A-Za-z0-9_-]", "", where_).lower()}'
+    near = shot['at'] if 'at' in shot else tagged_position(git, shot['tag'])
+    shot['encounters'] = encounters(git, near)
     if event:
         shot['event'] = event
         shot['name'] += '-event'
@@ -545,14 +567,16 @@ def start_display():
     die('the virtual display (Xvfb) did not start')
 
 
+THUMB = ['-frames:v', '1', '-vf', 'scale=64:36:flags=area', '-f', 'rawvideo', '-pix_fmt', 'gray', '-']
+
+
 def grab(path=None):
-    """The screen: saved to path, or else a 64x36 grey thumbnail (bytes) to compare frames by."""
-    cmd = ['ffmpeg', '-v', 'error', '-y', '-f', 'x11grab', '-video_size', STILLS_SIZE, '-i', os.environ['DISPLAY'],
-           '-frames:v', '1']
+    """The screen as a 64x36 grey thumbnail (bytes) to compare frames by; with path, also saved there, from the same
+    frame (one capture: on a CPU-drawn client every ffmpeg started takes from the game)."""
+    cmd = ['ffmpeg', '-v', 'error', '-y', '-f', 'x11grab', '-video_size', STILLS_SIZE, '-i', os.environ['DISPLAY']]
     if path:
-        return subprocess.run(cmd + [path], capture_output=True).returncode == 0
-    return subprocess.run(cmd + ['-vf', 'scale=64:36:flags=area', '-f', 'rawvideo', '-pix_fmt', 'gray', '-'],
-                          capture_output=True).stdout
+        cmd += ['-map', '0:v', '-frames:v', '1', path, '-map', '0:v']
+    return subprocess.run(cmd + THUMB, capture_output=True).stdout
 
 
 def loading(thumb):
@@ -598,7 +622,7 @@ def wait_for_angle(limit, previous=None):
                 return True
         elif time.time() - changed_at > 10.0:
             return True
-        time.sleep(0.3)
+        time.sleep(0.5)
     return False
 
 
@@ -682,12 +706,18 @@ def find_game(arg):
 
 
 def cmd_areas(args):
-    with tempfile.TemporaryDirectory(prefix='nwn-director-') as work:
+    cache = os.path.expanduser('~/.cache/nwn-director')
+    os.makedirs(cache, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='areas-', dir=cache) as work:
         unpack(args.module, work)
-        for resref, base in area_files(work).items():
+        def row(item):
+            resref, base = item
             are, git = gff(base + '.are'), gff(base + '.git')
-            print(f"{resref:16}  {are.get('Tag', {}).get('value', ''):24}  "
-                  f"{are['Width']['value']}x{are['Height']['value']}  {len(exits(git))} exits")
+            return (f"{resref:16}  {are.get('Tag', {}).get('value', ''):24}  "
+                    f"{are['Width']['value']}x{are['Height']['value']}  {len(exits(git))} exits")
+        with concurrent.futures.ThreadPoolExecutor(os.cpu_count() or 4) as pool:
+            for line in pool.map(row, area_files(work).items()):
+                print(line)
 
 
 def cmd_film(args):
@@ -711,7 +741,10 @@ def cmd_film(args):
     out = os.path.abspath(args.out or os.path.join('out', datetime.datetime.now().strftime('%Y%m%d-%H%M%S')))
     os.makedirs(out, exist_ok=True)
 
-    work = tempfile.mkdtemp(prefix='nwn-director-')
+    # The module's copy (unpacked and packed: twice its size) on disk, not in /tmp, which is in memory on some systems.
+    cache = os.path.expanduser('~/.cache/nwn-director')
+    os.makedirs(cache, exist_ok=True)
+    work = tempfile.mkdtemp(prefix='work-', dir=cache)
     # The neverwinter.nim tools look for an NWN user folder; on a server or CI runner there may be
     # none where they look.
     user = os.path.expanduser(args.user_dir)
@@ -772,8 +805,7 @@ def cmd_film(args):
                 # 600 s: a slow client gets most of that, rather than saving the last angle again.
                 if not wait_for_angle(STILL_WAIT, previous if stills else None):
                     log(f'  angle {rest}: the picture did not settle; saved as it was')
-                grab(path)
-                previous = grab()   # the server holds this angle until the count below goes up
+                previous = grab(path)   # the server holds this angle until the count below goes up
                 stills.append(path)
                 with sqlite3.connect(db, timeout=30) as conn:
                     conn.execute('UPDATE stills SET n = n + 1')
