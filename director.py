@@ -71,6 +71,38 @@ CLIENT_SETTINGS = {
     ('sound.voices', 'volume'): '1.0',
 }
 
+# Stills: the client draws on the CPU, where every pixel costs (on a busy machine a frame of a big town took so long
+# that the server dropped the client). Anti-aliasing is the dearest setting there and changes little in a still; then
+# the shaders, lighting, grass, shadows and screen effects. A frame limit leaves the CPU between frames to the network
+# and loading. With STILLS_SIZE, a still takes seconds instead of minutes.
+STILLS_SETTINGS = {
+    ('graphics.video.anti-aliasing', 'mode'): '0',
+    ('graphics.video.anisotropic-filtering', 'mode'): '0',
+    ('graphics.general', 'shader-quality'): '"Performance"',
+    ('graphics.effects', 'high-quality'): 'false',
+    ('graphics.lighting', 'enhanced'): 'false',
+    ('graphics.texture-animations', 'enabled'): 'false',
+    ('graphics.grass', 'mode'): '0',
+    ('graphics.shadows.creatures', 'mode'): '0',
+    ('graphics.shadows.environment', 'enabled'): 'false',
+    ('graphics.fbo.ssao', 'enabled'): 'false',
+    ('graphics.fbo.dof', 'enabled'): 'false',
+    ('graphics.fbo.hdr-bloom', 'enabled'): 'false',
+    ('graphics.water', 'shiny'): 'false',
+    ('graphics.lod', 'enabled'): 'true',
+    ('graphics.framelimiter', 'enabled'): 'true',
+    ('graphics.framelimiter.foreground', 'target-fps'): '10',
+    ('graphics.framelimiter.background', 'target-fps'): '10',
+}
+
+# Only in a settings.tml made from nothing (no player's file: a server or CI runner where nobody has played). A
+# player's client has a name (from Steam, or asked once and kept); without one it stops at "Please Enter a Player
+# Name" before joining. And no intro movie.
+NEW_SETTINGS = {
+    ('client.identity', 'name'): '"director"',
+    ('graphics.movies.intro', 'enabled'): 'false',
+}
+
 
 def log(msg):
     print(f'director: {msg}', flush=True)
@@ -343,7 +375,9 @@ def prepare(args, game, work):
             f.write('[nwscript]\n\t[nwscript.log]\n\t\t[nwscript.log.script-execution]\n\t\t\tenabled = true\n')
     mod = os.path.join(home, 'modules', 'director.mod')
     log(f'packing the copy ({len(shots)} shots)')
-    run(['nwn_erf', '--quiet', '-c', '-e', 'MOD', '-f', mod] + sorted(glob.glob(os.path.join(unpacked, '*'))))
+    # The folder, not its files: a big module's file list can pass the kernel's limit on a command line (15,800
+    # files and 1.8 MB for one of 164 MB), and packing a folder is twice as fast.
+    run(['nwn_erf', '--quiet', '-c', '-e', 'MOD', '-f', mod, unpacked])
     return home
 
 
@@ -382,11 +416,11 @@ class ServerLog:
         self.queue.put(None)
 
     def next(self, timeout):
-        """The next line, or '' if none came within timeout seconds."""
+        """The next line (maybe blank), or None if none came within timeout seconds."""
         try:
             line = self.queue.get(timeout=timeout)
         except queue.Empty:
-            return ''
+            return None
         if line is None:
             die('the server stopped; see: docker logs nwn-director')
         return line
@@ -395,7 +429,7 @@ class ServerLog:
         end = time.time() + timeout
         while time.time() < end:
             line = self.next(end - time.time())
-            if line and re.search(pattern, line):
+            if line is not None and re.search(pattern, line):
                 return line
         if not fatal:
             return None
@@ -405,7 +439,7 @@ class ServerLog:
         """Lines until none comes for quiet_timeout seconds."""
         while True:
             line = self.next(quiet_timeout)
-            if not line:
+            if line is None:
                 die(f'the server log went quiet for {quiet_timeout} s (docker logs nwn-director)')
             yield line
 
@@ -415,18 +449,44 @@ class ServerLog:
 
 # ---------------------------------------------------------------- client
 
-def edit_settings(src, dst):
-    section = ''
-    out = []
-    for line in open(src, encoding='utf-8'):
+def client_settings(src, dst, settings):
+    """Write the cameraman client's settings.tml: the player's own (src) with settings ((section, key) -> TOML value)
+    changed line by line, so the rest of the file stays as the client wrote it. A key the file lacks goes under its
+    section's header, or in a new section at the end. With no src (nobody has played here), a file of settings and
+    NEW_SETTINGS: the client takes defaults for the rest and fills them in."""
+    if not src or not os.path.exists(src):
+        settings = {**NEW_SETTINGS, **settings}
+        with open(dst, 'w', encoding='utf-8') as f:
+            for section in dict.fromkeys(s for s, _ in settings):
+                f.write(f'[{section}]\n')
+                f.writelines(f'{k} = {v}\n' for (s, k), v in settings.items() if s == section)
+        return
+    lines = open(src, encoding='utf-8').readlines()
+    section, headers, done = '', {}, set()
+    for i, line in enumerate(lines):
         m = re.match(r'\s*\[([^\]]+)\]\s*$', line)
         if m:
-            section = m.group(1)
-        else:
-            m = re.match(r'(\s*)([A-Za-z0-9_-]+)(\s*=\s*)(.*)$', line)
-            if m and (section, m.group(2)) in CLIENT_SETTINGS:
-                line = m.group(1) + m.group(2) + m.group(3) + CLIENT_SETTINGS[(section, m.group(2))] + '\n'
+            section = m.group(1).strip()
+            headers[section] = i
+            continue
+        m = re.match(r'(\s*)([A-Za-z0-9_-]+)(\s*=\s*)(.*)$', line)
+        if m and (section, m.group(2)) in settings:
+            lines[i] = m.group(1) + m.group(2) + m.group(3) + settings[(section, m.group(2))] + '\n'
+            done.add((section, m.group(2)))
+    missing = [k for k in settings if k not in done]
+    after = {}
+    for section, key in missing:
+        if section in headers:
+            after.setdefault(headers[section], []).append(f'{key} = {settings[(section, key)]}\n')
+    out = []
+    for i, line in enumerate(lines):
         out.append(line)
+        out += after.get(i, [])
+    if out and not out[-1].endswith('\n'):
+        out[-1] += '\n'
+    for section in dict.fromkeys(s for s, _ in missing if s not in headers):
+        out.append(f'[{section}]\n')
+        out += [f'{k} = {settings[(s, k)]}\n' for s, k in missing if s == section]
     with open(dst, 'w', encoding='utf-8') as f:
         f.writelines(out)
 
@@ -445,8 +505,8 @@ def prepare_client(args):
         src, dst = os.path.join(user, d), os.path.join(cdir, d)
         if os.path.exists(src) and not os.path.lexists(dst):
             os.symlink(src, dst)
-    if os.path.exists(os.path.join(user, 'settings.tml')):
-        edit_settings(os.path.join(user, 'settings.tml'), os.path.join(cdir, 'settings.tml'))
+    settings = {**CLIENT_SETTINGS, **(STILLS_SETTINGS if args.stills else {})}
+    client_settings(os.path.join(user, 'settings.tml'), os.path.join(cdir, 'settings.tml'), settings)
     vault = os.path.join(cdir, 'localvault')
     shutil.rmtree(vault, ignore_errors=True)
     os.makedirs(vault)
@@ -465,7 +525,8 @@ def start_client(args, game, cdir, logfile):
                             cwd=os.path.dirname(binary), stdout=logfile, stderr=subprocess.STDOUT, env=env)
 
 
-STILLS_SIZE = '1920x1080'
+# The stills' screen (STILLS_SETTINGS): small enough to draw on a CPU, big enough to see what a bug report is about.
+STILLS_SIZE = '960x540'
 
 
 def start_display():
@@ -504,6 +565,10 @@ def loading(thumb):
     rows = [thumb[r * 64:(r + 1) * 64] for r in range(36)]
     edges = [row[:12] + row[-12:] for row in rows[:4] + rows[-4:]] + [row[:6] + row[-6:] for row in rows]
     return max(max(e) for e in edges) < 8
+
+
+# Seconds to wait for a still's angle to be drawn (the server holds an angle for 600).
+STILL_WAIT = 540
 
 
 def wait_for_angle(limit, previous=None):
@@ -701,8 +766,11 @@ def cmd_film(args):
                     recorder = record(os.path.join(out, name + '.mp4'), size)
             elif what == 'STILL':
                 path = os.path.join(out, f'{name}-{int(rest):02d}.png')
-                # The first still waits for the client to load the area.
-                if not wait_for_angle(120 if stills else 300, previous if stills else None):
+                if client.poll() is not None:
+                    die(f'the game client stopped (exit {client.returncode}); see {out}/client.log')
+                # The first still waits for the client to load the area. The server holds each angle for up to
+                # 600 s: a slow client gets most of that, rather than saving the last angle again.
+                if not wait_for_angle(STILL_WAIT, previous if stills else None):
                     log(f'  angle {rest}: the picture did not settle; saved as it was')
                 grab(path)
                 previous = grab()   # the server holds this angle until the count below goes up
@@ -711,7 +779,8 @@ def cmd_film(args):
                     conn.execute('UPDATE stills SET n = n + 1')
                 log(f'  still {rest}')
             elif what == 'CUT' and args.stills and stills:
-                contact_sheet(stills, os.path.join(out, name + '.png'))
+                # -sheet: a spot's name can end in two digits (its y), as the stills do (-NN).
+                contact_sheet(stills, os.path.join(out, name + '-sheet.png'))
             elif what == 'CUT' and recorder:
                 recorder.send_signal(signal.SIGINT)
                 recorder.wait()
