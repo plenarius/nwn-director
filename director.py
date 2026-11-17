@@ -720,11 +720,113 @@ def cmd_areas(args):
                 print(line)
 
 
-def cmd_film(args):
+def log_in(slog, size, screenshot=None, vault_key=None, raise_window=True):
+    """Get the cameraman into the game: once the client has joined the server, click Play on the character list (its
+    only character is selected; the panel is a fixed size, centred, at the default interface scale), again every few
+    seconds until the cameraman is in (a slow client may not have listed it yet). Dies saying why if it doesn't get
+    in, with the screen saved to screenshot if given. vault_key: the public CD key whose server vault holds the
+    character, if the server keeps one (with another key, Play stays greyed out)."""
+    def fail(why):
+        if screenshot:
+            grab(screenshot)
+        die(why + (f'; the screen: {os.path.basename(screenshot)}' if screenshot else ''))
+
+    joined = slog.wait_for(r'Joined as Player', 300, fatal=False)
+    if not joined:
+        fail('the cameraman never got into the game: it never logged in (is the CD key in a game elsewhere? '
+             '"still in use")')
+    key = re.search(r'\((\w+)\) Joined as Player', joined)
+    if vault_key and key and key.group(1) != vault_key:
+        fail(f'the cameraman logged in with the CD key {key.group(1)}, but its character is in the vault of '
+             f'{vault_key}')
+    w, h = (int(n) for n in size.split('x'))
+    for attempt in range(20):
+        time.sleep(4 if attempt == 0 else 6)
+        if raise_window:
+            raise_client()
+        subprocess.run(['xdotool', 'mousemove', str(w // 2 + 102), str(h // 2 + 231), 'click', '1'])
+        time.sleep(0.5)
+        subprocess.run(['xdotool', 'mousemove', str(w - 1), str(h - 1)])
+        if slog.wait_for(r'DIRECTOR: cameraman in', 10, fatal=False):
+            return
+    fail('the cameraman never got into the game: it logged in but Play did nothing (the click missed?)')
+
+
+def markers(slog, quiet):
+    """The director's markers in the server log, as (what, rest): ROLL, STILL, CUT, END, skip or event. Stops after
+    END; dies if the log goes quiet for quiet seconds."""
+    for line in slog.lines(quiet):
+        m = re.search(r'DIRECTOR: (ROLL|STILL|CUT|END|skip|event)(.*)', line)
+        if not m:
+            continue
+        what, rest = m.group(1), m.group(2).strip()
+        if what in ('skip', 'event'):
+            log(f'{what} {rest}')
+        yield what, rest
+        if what == 'END':
+            return
+
+
+def take_stills(slog, out, db, client=None):
+    """Save every still the server asks for (STILL n) as out/<shot>-NN.png, counting each in db so the server turns
+    to the next angle, and a contact sheet per shot (<shot>-sheet.png). Returns the sheets."""
+    name, stills, previous, sheets = '', [], None, []
+    # The longest wait between markers is a slow client loading an area.
+    for what, rest in markers(slog, 600):
+        if what == 'ROLL':
+            name, stills = re.sub(r'[^A-Za-z0-9_-]', '', rest), []
+            log(f'stills of {name}')
+        elif what == 'STILL':
+            if client and client.poll() is not None:
+                die(f'the game client stopped (exit {client.returncode}); see {out}/client.log')
+            # The first still waits for the client to load the area. The server holds each angle for up to 600 s:
+            # a slow client gets most of that, rather than saving the last angle again.
+            if not wait_for_angle(STILL_WAIT, previous if stills else None):
+                log(f'  angle {rest}: the picture did not settle; saved as it was')
+            path = os.path.join(out, f'{name}-{int(rest):02d}.png')
+            previous = grab(path)   # the server holds this angle until the count below goes up
+            stills.append(path)
+            with sqlite3.connect(db, timeout=30) as conn:
+                conn.execute('UPDATE stills SET n = n + 1')
+            log(f'  still {rest}')
+        elif what == 'CUT' and stills:
+            # -sheet: a spot's name can end in two digits (its y), as the stills do (-NN).
+            sheets.append(os.path.join(out, name + '-sheet.png'))
+            contact_sheet(stills, sheets[-1])
+    return sheets
+
+
+def film_video(slog, out, size, seconds):
+    """Record every shot from its ROLL to its CUT as out/<shot>.mp4."""
+    recorder = None
+    try:
+        # The longest wait between markers is a shot (--seconds) plus loading the next area.
+        for what, rest in markers(slog, seconds + 120):
+            if what == 'ROLL':
+                name = re.sub(r'[^A-Za-z0-9_-]', '', rest)
+                log(f'recording {name}')
+                raise_client()
+                recorder = record(os.path.join(out, name + '.mp4'), size)
+            elif what == 'CUT' and recorder:
+                recorder.send_signal(signal.SIGINT)
+                recorder.wait()
+                recorder = None
+    finally:
+        if recorder:
+            recorder.send_signal(signal.SIGINT)
+            recorder.wait()
+
+
+def check_tools(args):
     tools = ['docker', 'nwn_erf', 'nwn_gff', 'nwn_script_comp', 'ffmpeg', 'xdotool']
-    if args.stills:
-        tools.append('Xvfb')
-    else:
+    tools += ['Xvfb'] if args.stills else ['xrandr']
+    for tool in tools:
+        if not shutil.which(tool):
+            die(f'{tool} not found (README.md lists what is needed)')
+
+
+def cmd_film(args):
+    if not args.stills:
         # A locked or sleeping screen is what would be recorded: keep the desktop awake while filming.
         if not os.environ.get('NWN_DIRECTOR_INHIBITED') and shutil.which('gnome-session-inhibit'):
             os.environ['NWN_DIRECTOR_INHIBITED'] = '1'
@@ -733,10 +835,7 @@ def cmd_film(args):
         os.environ.setdefault('DISPLAY', ':0')
         if screen_locked():
             die('the screen is locked; unlock it and run again')
-        tools.append('xrandr')
-    for tool in tools:
-        if not shutil.which(tool):
-            die(f'{tool} not found (README.md lists what is needed)')
+    check_tools(args)
     game = find_game(args.game)
     out = os.path.abspath(args.out or os.path.join('out', datetime.datetime.now().strftime('%Y%m%d-%H%M%S')))
     os.makedirs(out, exist_ok=True)
@@ -749,7 +848,7 @@ def cmd_film(args):
     # none where they look.
     user = os.path.expanduser(args.user_dir)
     os.environ.setdefault('NWN_HOME', user if os.path.isdir(user) else work)
-    client = recorder = slog = xvfb = None
+    client = slog = xvfb = None
     try:
         home = prepare(args, game, work)
         log('starting the server')
@@ -762,69 +861,14 @@ def cmd_film(args):
         log('starting the game client' + (' (drawing on the CPU, in a virtual display)' if args.stills else ''))
         cdir = prepare_client(args)
         client = start_client(args, game, cdir, open(os.path.join(out, 'client.log'), 'w'))
-        slog.wait_for(r'Joined as Player', 300)
-        # Character list: the only character is selected. Click Play (the panel is a fixed size,
-        # centred, at the default interface scale), then park the pointer in a corner. Again
-        # every 10 s until the cameraman is in: a slow client may not have listed it yet.
         size = STILLS_SIZE if args.stills else screen_size()
-        w, h = (int(n) for n in size.split('x'))
-        for attempt in range(12):
-            time.sleep(4 if attempt == 0 else 6)
-            raise_client()
-            subprocess.run(['xdotool', 'mousemove', str(w // 2 + 102), str(h // 2 + 231), 'click', '1'])
-            time.sleep(0.5)
-            subprocess.run(['xdotool', 'mousemove', str(w - 1), str(h - 1)])
-            if slog.wait_for(r'DIRECTOR: cameraman in', 10, fatal=False):
-                break
+        log_in(slog, size, screenshot=os.path.join(out, 'no-cameraman.png') if args.stills else None,
+               raise_window=not args.stills)
+        if args.stills:
+            take_stills(slog, out, os.path.join(home, 'database', 'director.sqlite3'), client)
         else:
-            die('the cameraman never got into the game (the Play click missed?)')
-
-        # Markers come at least every area (the longest wait is --seconds plus loading; for
-        # stills, a slow client loading an area).
-        name, stills, previous = '', [], None
-        db = os.path.join(home, 'database', 'director.sqlite3')
-        for line in slog.lines(max(args.seconds + 120, 600 if args.stills else 0)):
-            m = re.search(r'DIRECTOR: (ROLL|STILL|CUT|END|skip|event)(.*)', line)
-            if not m:
-                continue
-            what, rest = m.group(1), m.group(2).strip()
-            if what == 'ROLL':
-                name = re.sub(r'[^A-Za-z0-9_-]', '', rest)
-                if args.stills:
-                    log(f'stills of {name}')
-                    stills = []
-                else:
-                    log(f'recording {name}')
-                    raise_client()
-                    recorder = record(os.path.join(out, name + '.mp4'), size)
-            elif what == 'STILL':
-                path = os.path.join(out, f'{name}-{int(rest):02d}.png')
-                if client.poll() is not None:
-                    die(f'the game client stopped (exit {client.returncode}); see {out}/client.log')
-                # The first still waits for the client to load the area. The server holds each angle for up to
-                # 600 s: a slow client gets most of that, rather than saving the last angle again.
-                if not wait_for_angle(STILL_WAIT, previous if stills else None):
-                    log(f'  angle {rest}: the picture did not settle; saved as it was')
-                previous = grab(path)   # the server holds this angle until the count below goes up
-                stills.append(path)
-                with sqlite3.connect(db, timeout=30) as conn:
-                    conn.execute('UPDATE stills SET n = n + 1')
-                log(f'  still {rest}')
-            elif what == 'CUT' and args.stills and stills:
-                # -sheet: a spot's name can end in two digits (its y), as the stills do (-NN).
-                contact_sheet(stills, os.path.join(out, name + '-sheet.png'))
-            elif what == 'CUT' and recorder:
-                recorder.send_signal(signal.SIGINT)
-                recorder.wait()
-                recorder = None
-            elif what in ('skip', 'event'):
-                log(f'{what} {rest}')
-            elif what == 'END':
-                break
+            film_video(slog, out, size, args.seconds)
     finally:
-        if recorder:
-            recorder.send_signal(signal.SIGINT)
-            recorder.wait()
         if client:
             # SIGKILL: on a normal quit the client crashes tearing down the cameraman's cutscene
             # invisibility effect and leaves a crash dialog on the desktop.
@@ -837,6 +881,29 @@ def cmd_film(args):
             subprocess.run(['docker', 'rm', '-f', CONTAINER], capture_output=True)
         shutil.rmtree(work, ignore_errors=True)
     log(f'done: {out}')
+
+
+def shot_specs(args):
+    """The shots asked for, as (kind, area, where, event) in filming order; dies on anything malformed."""
+    specs = [('walk', a.strip(), None, None) for a in (args.areas or '').split(',') if a.strip()]
+    for spot in args.spot:
+        area, sep, where_ = spot.partition('@')
+        if not sep or not area or not where_:
+            die(f'--spot {spot}: expected AREA@X,Y or AREA@TAG')
+        specs.append(('spot', area.strip(), where_.strip(), None))
+    for event in args.event:
+        place, sep, code = event.partition('=')
+        area, sep2, where_ = place.partition('@')
+        if not sep or not sep2 or not area or not where_ or not code.strip():
+            die(f'--event {event}: expected AREA@X,Y=CODE or AREA@TAG=CODE')
+        specs.append(('spot', area.strip(), where_.strip(), code.strip()))
+    if not specs:
+        die('nothing to film: give --areas and/or --spot')
+    if args.stills < 0:
+        die('--stills needs a number of stills')
+    if args.stills and (args.areas or args.event):
+        die('--stills takes spots only (--spot), not --areas or --event')
+    return specs
 
 
 def main():
@@ -884,25 +951,7 @@ def main():
         args.tlk_dir = os.path.expanduser(args.tlk_dir or os.path.join(user, 'tlk'))
         if not os.path.exists(args.character):
             die(f'no character at {args.character}')
-        args.shot_specs = [('walk', a.strip(), None, None)
-                           for a in (args.areas or '').split(',') if a.strip()]
-        for spot in args.spot:
-            area, sep, where_ = spot.partition('@')
-            if not sep or not area or not where_:
-                die(f'--spot {spot}: expected AREA@X,Y or AREA@TAG')
-            args.shot_specs.append(('spot', area.strip(), where_.strip(), None))
-        for event in args.event:
-            place, sep, code = event.partition('=')
-            area, sep2, where_ = place.partition('@')
-            if not sep or not sep2 or not area or not where_ or not code.strip():
-                die(f'--event {event}: expected AREA@X,Y=CODE or AREA@TAG=CODE')
-            args.shot_specs.append(('spot', area.strip(), where_.strip(), code.strip()))
-        if not args.shot_specs:
-            die('nothing to film: give --areas and/or --spot')
-        if args.stills < 0:
-            die('--stills needs a number of stills')
-        if args.stills and (args.areas or args.event):
-            die('--stills takes spots only (--spot), not --areas or --event')
+        args.shot_specs = shot_specs(args)
     args.func(args)
 
 

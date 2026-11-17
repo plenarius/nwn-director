@@ -1,0 +1,23 @@
+name: Tests
+
+# director.py's plain functions on made-up area data (tests/). No game, server or client: those runs are tested by
+# hand (README.md). ilsare pulls main for every Layonara /film, so main must stay working.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: sudo apt-get install -y --no-install-recommends ffmpeg > /dev/null
+      - run: python3 -m unittest discover -v tests
