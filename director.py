@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """nwn-director: film the areas of a Neverwinter Nights: Enhanced Edition module.
 
-    director.py film MODULE.mod [--areas AREA[,AREA...]] [--spot AREA@X,Y|AREA@TAG ...]
+    director.py film MODULE.mod [--areas AREA[,AREA...]] [--spot AREA@X,Y[/FACING]|AREA@TAG ...]
                                 [--event AREA@X,Y=CODE|AREA@TAG=CODE ...] --character CHAR.bic [options]
     director.py areas MODULE.mod
 
@@ -9,12 +9,14 @@
 (Docker), logs your game client in as the cameraman and records every shot to OUT/<name>.mp4:
 a walkthrough of each area in --areas (<area>.mp4), a slow circle around each --spot
 (<area>-<x>-<y>.mp4 or <area>-<tag>.mp4), and the same for each --event, with its CODE run a
-few seconds in (<area>-<x>-<y>-event.mp4 or <area>-<tag>-event.mp4).
+few seconds in (<area>-<x>-<y>-event.mp4 or <area>-<tag>-event.mp4). An AREA is a resref or an
+area's tag (as bug reports give it).
 `areas` lists the module's areas (resref, tag, size, exits) to choose from.
 
 See README.md for requirements and how it works.
 """
 import argparse
+import concurrent.futures
 import datetime
 import glob
 import json
@@ -101,6 +103,24 @@ def area_files(unpacked):
     return areas
 
 
+def area_by_name(name, areas, tags):
+    """The resref of the area called name: a resref, or else an area's tag (tags maps resref to
+    tag, read on first use). Dies if there is none, or if the tag is on more than one area."""
+    if name.lower() in areas:
+        return name.lower()
+    if not tags:
+        log('looking areas up by tag')
+        with concurrent.futures.ThreadPoolExecutor(os.cpu_count() or 4) as pool:
+            found = pool.map(lambda base: gff(base + '.are').get('Tag', {}).get('value', ''), areas.values())
+            tags.update(zip(areas.keys(), found))
+    found = [r for r, t in tags.items() if t == name] or [r for r, t in tags.items() if t.lower() == name.lower()]
+    if not found:
+        die(f'no area {name} in the module, by resref or tag (director.py areas MODULE lists them)')
+    if len(found) > 1:
+        die(f'more than one area has the tag {name}: {", ".join(found)}; give the resref')
+    return found[0]
+
+
 def exits(git):
     """Every transition in an area: doors and triggers with a destination. A trigger's point is
     the middle of its shape. A door's is 2.5 m in front of it, with the spot 2.5 m behind it as
@@ -170,9 +190,14 @@ def walk_shot(area, git):
 
 
 def spot_shot(area, git, where_, event=None):
-    """A shot circling one place in an area: where_ is "X,Y" or an object's tag. An event (a script
+    """A shot circling one place in an area: where_ is "X,Y" or an object's tag, with "/FACING"
+    after it to start the circle looking that way (degrees, 0 east, 90 north). An event (a script
     name, or NWScript statements) runs a few seconds in."""
     shot = {'area': area, 'kind': 'spot', 'encounters': encounters(git)}
+    m = re.fullmatch(r'(.*?)\s*/\s*(-?[0-9.]+)\s*', where_)
+    if m:
+        where_ = m.group(1)
+        shot['facing'] = round(float(m.group(2)) % 360.0, 1)
     m = re.fullmatch(r'\s*(-?[0-9.]+)\s*,\s*(-?[0-9.]+)\s*', where_)
     if m:
         shot['at'] = [float(m.group(1)), float(m.group(2))]
@@ -261,11 +286,11 @@ def prepare(args, game, work):
         die(f'the module already has scripts named like nwn-director\'s: {", ".join(ours)}')
 
     areas = area_files(unpacked)
+    tags = {}
     shots = []
     for spec in args.shot_specs:
         kind, area, where_, event = spec
-        if area not in areas:
-            die(f'no area {area} in the module (director.py areas {args.module} lists them)')
+        area = area_by_name(area, areas, tags)
         git = gff(areas[area] + '.git')
         if event:
             event = compile_event(game, unpacked, event, len(shots))
@@ -418,6 +443,16 @@ def start_client(args, game, cdir, logfile):
                             cwd=os.path.dirname(binary), stdout=logfile, stderr=subprocess.STDOUT)
 
 
+def raise_client():
+    """Bring the game's window to the front: whatever is on top of it is what gets recorded (and
+    what the Play click lands on). Done when it starts and again before every shot, in case
+    another window came up meanwhile."""
+    found = subprocess.run(['xdotool', 'search', '--onlyvisible', '--class', 'nwmain'],
+                           capture_output=True, text=True).stdout.split()
+    for win in found:
+        subprocess.run(['xdotool', 'windowactivate', '--sync', win], capture_output=True, timeout=10)
+
+
 def screen_size():
     out = subprocess.run(['xrandr', '--current'], capture_output=True, text=True).stdout
     m = re.search(r'current (\d+) x (\d+)', out)
@@ -508,6 +543,7 @@ def cmd_film(args):
         client = start_client(args, game, cdir, open(os.path.join(out, 'client.log'), 'w'))
         slog.wait_for(r'Joined as Player', 300)
         time.sleep(4)
+        raise_client()
         # Character list: the only character is selected. Click Play (the panel is a fixed size,
         # centred, at the default interface scale), then park the pointer in a corner.
         size = screen_size()
@@ -526,6 +562,7 @@ def cmd_film(args):
             if what == 'ROLL':
                 name = re.sub(r'[^A-Za-z0-9_-]', '', rest)
                 log(f'recording {name}')
+                raise_client()
                 recorder = record(os.path.join(out, name + '.mp4'), size)
             elif what == 'CUT' and recorder:
                 recorder.send_signal(signal.SIGINT)
@@ -561,9 +598,10 @@ def main():
 
     f = sub.add_parser('film', help='film walkthroughs of areas')
     f.add_argument('module', help='the .mod to film (it is copied, never changed)')
-    f.add_argument('--areas', help='walkthroughs: area resrefs, comma-separated, in filming order')
-    f.add_argument('--spot', action='append', default=[], metavar='AREA@X,Y|AREA@TAG',
-                   help='circle one place: a point in an area, or an object by tag (repeatable)')
+    f.add_argument('--areas', help='walkthroughs: areas (resrefs or tags), comma-separated, in filming order')
+    f.add_argument('--spot', action='append', default=[], metavar='AREA@X,Y[/FACING]|AREA@TAG',
+                   help='circle one place: a point in an area, or an object by tag; /FACING starts the '
+                        'circle looking that way, as a bug report\'s location gives it (repeatable)')
     f.add_argument('--event', action='append', default=[], metavar='AREA@X,Y=CODE|AREA@TAG=CODE',
                    help='a spot where CODE runs a few seconds in: a script of the module, or NWScript '
                         'statements (checked before filming), with OBJECT_SELF the tagged object (or the '
@@ -592,19 +630,19 @@ def main():
         args.tlk_dir = os.path.expanduser(args.tlk_dir or os.path.join(user, 'tlk'))
         if not os.path.exists(args.character):
             die(f'no character at {args.character}')
-        args.shot_specs = [('walk', a.strip().lower(), None, None)
+        args.shot_specs = [('walk', a.strip(), None, None)
                            for a in (args.areas or '').split(',') if a.strip()]
         for spot in args.spot:
             area, sep, where_ = spot.partition('@')
             if not sep or not area or not where_:
                 die(f'--spot {spot}: expected AREA@X,Y or AREA@TAG')
-            args.shot_specs.append(('spot', area.strip().lower(), where_.strip(), None))
+            args.shot_specs.append(('spot', area.strip(), where_.strip(), None))
         for event in args.event:
             place, sep, code = event.partition('=')
             area, sep2, where_ = place.partition('@')
             if not sep or not sep2 or not area or not where_ or not code.strip():
                 die(f'--event {event}: expected AREA@X,Y=CODE or AREA@TAG=CODE')
-            args.shot_specs.append(('spot', area.strip().lower(), where_.strip(), code.strip()))
+            args.shot_specs.append(('spot', area.strip(), where_.strip(), code.strip()))
         if not args.shot_specs:
             die('nothing to film: give --areas and/or --spot')
     args.func(args)

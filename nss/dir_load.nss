@@ -13,15 +13,16 @@
 //   walk  the walker walks the area's route and the camera follows it from behind at eye level
 //   spot  the walker stands at a place (a point, or an object by tag) and the camera circles it;
 //         with an "event", that runs DIRECTOR_EVENT_DELAY seconds in, so the clip shows before
-//         and after
+//         and after; with a "facing", the circle starts looking that way (as a player standing
+//         there faced, from a bug report)
 //
 // Module variables (set by director.py):
 //   DIRECTOR_ONLOAD  string  the module's own OnModuleLoad script
 //   DIRECTOR_SHOTS   string  JSON list of shots, each {"name", "area", "kind": "walk" | "spot",
 //                            "encounters": [[x, y], ...], and for a walk "stops": [[x, y], ...],
-//                            for a spot "at": [x, y] or "tag": "TAG", and maybe "event": the script
-//                            to run (the module's, or dir_ev<n>: the event's code, compiled by
-//                            director.py)}
+//                            for a spot "at": [x, y] or "tag": "TAG", maybe "facing": degrees
+//                            (0 east, 90 north) and maybe "event": the script to run (the
+//                            module's, or dir_ev<n>: the event's code, compiled by director.py)}
 //   DIRECTOR_SECONDS float   seconds to film each shot at most
 //   DIRECTOR_RUN     int     TRUE: the walker runs
 //
@@ -238,6 +239,15 @@ void Dir_Event(object oWalker, object oArea, json jShot)
     Dir_Log("event ran " + sScript);
 }
 
+// A spot's camera direction after fElapsed of fSeconds: one circle, from the shot's facing.
+float Dir_SpotDir(json jShot, float fElapsed, float fSeconds)
+{
+    float fDir = JsonGetFloat(JsonObjectGet(jShot, "facing")) + 360.0 * fElapsed / fSeconds;
+    while (fDir >= 360.0)
+        fDir -= 360.0;
+    return fDir;
+}
+
 // Every tick while rolling: walks follow the walker from behind, spots circle it once over the shot.
 void Dir_Track(object oCam, object oWalker, int nShot, int bWalk, float fElapsed)
 {
@@ -245,7 +255,7 @@ void Dir_Track(object oCam, object oWalker, int nShot, int bWalk, float fElapsed
     if (bWalk)
         Dir_Cam(oCam, GetFacing(oWalker), DIRECTOR_WALK_DIST, DIRECTOR_WALK_PITCH, CAMERA_TRANSITION_TYPE_SLOW);
     else
-        Dir_Cam(oCam, 360.0 * fElapsed / fSeconds, DIRECTOR_SPOT_DIST, DIRECTOR_SPOT_PITCH, CAMERA_TRANSITION_TYPE_MEDIUM);
+        Dir_Cam(oCam, Dir_SpotDir(Dir_Shot(nShot), fElapsed, fSeconds), DIRECTOR_SPOT_DIST, DIRECTOR_SPOT_PITCH, CAMERA_TRANSITION_TYPE_MEDIUM);
     Dir_Keep(oCam, oWalker);
     if (GetLocalInt(oWalker, "DIRECTOR_DONE") || fElapsed >= fSeconds)
     {
@@ -297,7 +307,7 @@ void Dir_Roll(object oCam, object oWalker, object oArea, int nShot)
     }
     else
     {
-        DelayCommand(0.5, Dir_Cam(oCam, 0.0, DIRECTOR_SPOT_DIST, DIRECTOR_SPOT_PITCH, CAMERA_TRANSITION_TYPE_SNAP));
+        DelayCommand(0.5, Dir_Cam(oCam, Dir_SpotDir(jShot, 0.0, 1.0), DIRECTOR_SPOT_DIST, DIRECTOR_SPOT_PITCH, CAMERA_TRANSITION_TYPE_SNAP));
         if (Dir_ShotString(jShot, "event") != "")
             DelayCommand(1.5 + DIRECTOR_EVENT_DELAY, Dir_Event(oWalker, oArea, jShot));
     }

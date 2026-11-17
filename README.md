@@ -8,7 +8,8 @@ sound.
 
 - **Walkthroughs** of whole areas, to cut into a trailer or a montage.
 - **Spots**: a slow circle around one place (a point, or an object by tag), to see what is
-  really there when triaging a bug report.
+  really there when triaging a bug report. Give it the area tag, position and facing from the
+  report, and the circle starts looking where the player looked.
 - **Events**: a spot where something happens a few seconds in: a script of the module, or a
   line of NWScript you give it (open a door, cast a spell, spawn a creature), so the clip shows
   what the engine really does.
@@ -69,6 +70,11 @@ The server image must match your client's version (`--image`).
     --spot townsquare@inn_door --spot lakeshore@120,87 --seconds 20 \
     --character ~/.local/share/Neverwinter\ Nights/localvault/somechar.bic
 
+# A bug report's spot: area tag, position, and the way the player faced (degrees).
+./director.py film ~/modules/mymodule.mod \
+    --spot FortHope_FrH@213.99,60.32/150 --seconds 30 \
+    --character ~/.local/share/Neverwinter\ Nights/localvault/somechar.bic
+
 # The inn door opening, and a fireball at a point, 3 seconds into each shot.
 ./director.py film ~/modules/mymodule.mod \
     --event 'townsquare@inn_door=AssignCommand(OBJECT_SELF, ActionOpenDoor(OBJECT_SELF));' \
@@ -81,14 +87,15 @@ or the name of a script the module has. `OBJECT_SELF` is the tagged object, or f
 invisible walker standing there. The code is compiled before anything starts, so a mistake stops
 at once with the compiler's message.
 
-The videos land in `out/<date-time>/`. Any character works as the cameraman: it is never seen.
+An AREA is an area's resref or its tag (`director.py areas` lists both). The videos land in
+`out/<date-time>/`. Any character works as the cameraman: it is never seen.
 
 Options (`./director.py film --help` for all of them):
 
 | Option | |
 |---|---|
 | `--areas A,B` | walkthroughs of these areas, in this order |
-| `--spot AREA@X,Y` / `--spot AREA@TAG` | circle a point, or an object by tag (repeatable) |
+| `--spot AREA@X,Y` / `--spot AREA@TAG` | circle a point, or an object by tag (repeatable); add `/FACING` (degrees, 0 east, 90 north) to start the circle looking that way |
 | `--event AREA@X,Y=CODE` / `--event AREA@TAG=CODE` | a spot where CODE runs 3 seconds in (repeatable) |
 | `--seconds N` | film each shot for at most N seconds (default 45) |
 | `--run` | the walker runs instead of walking |
