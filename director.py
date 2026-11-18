@@ -961,14 +961,14 @@ def shot_specs(args):
 
 
 def main():
-    p = argparse.ArgumentParser(description='Film walkthroughs of NWN:EE module areas.')
+    p = argparse.ArgumentParser(description='Film NWN:EE module areas: walkthroughs, spots, events and stills.')
     sub = p.add_subparsers(dest='command', required=True)
 
     a = sub.add_parser('areas', help="list a module's areas")
     a.add_argument('module')
     a.set_defaults(func=cmd_areas)
 
-    f = sub.add_parser('film', help='film walkthroughs of areas')
+    f = sub.add_parser('film', help='film walkthroughs, spots, events or stills')
     f.add_argument('module', help='the .mod to film (it is copied, never changed)')
     f.add_argument('--areas', help='walkthroughs: areas (resrefs or tags), comma-separated, in filming order')
     f.add_argument('--spot', action='append', default=[], metavar='AREA@X,Y[/FACING]|AREA@TAG',

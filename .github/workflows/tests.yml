@@ -1,7 +1,7 @@
 name: Tests
 
 # director.py's plain functions on made-up area data (tests/). No game, server or client: those runs are tested by
-# hand (README.md). ilsare pulls main for every Layonara /film, so main must stay working.
+# hand (README.md). Other projects run main as it is, so main must stay working.
 on:
   push:
     branches: [main]

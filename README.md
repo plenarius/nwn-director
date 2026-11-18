@@ -112,6 +112,7 @@ Options (`./director.py film --help` for all of them):
 
 | Option | |
 |---|---|
+| `--character FILE` | the cameraman's character (`.bic`), required |
 | `--areas A,B` | walkthroughs of these areas, in this order |
 | `--spot AREA@X,Y` / `--spot AREA@TAG` | circle a point, or an object by tag (repeatable); add `/FACING` (degrees, 0 east, 90 north) to start the circle looking that way |
 | `--event AREA@X,Y=CODE` / `--event AREA@TAG=CODE` | a spot where CODE runs 3 seconds in (repeatable) |
@@ -120,10 +121,27 @@ Options (`./director.py film --help` for all of them):
 | `--run` | the walker runs instead of walking |
 | `--out DIR` | where the videos go |
 | `--game DIR` | your NWN:EE install, if it isn't found by itself |
+| `--user-dir DIR` | your NWN user folder, if it isn't `~/.local/share/Neverwinter Nights` |
 | `--hak-dir DIR`, `--tlk-dir DIR` | the module's haks and TLK, if they aren't in your user folder |
+| `--client-dir DIR` | the cameraman client's own user folder (default `~/.cache/nwn-director/client`) |
+| `--port N` | the server's port on `127.0.0.1` (default 5121; change it if a server of yours already uses it) |
 | `--image IMAGE` | the server image, to match your client's version |
 | `--keep-server` | leave the server running afterwards (`docker logs nwn-director`) |
 | `--script-log` | log every script the server runs, to find what a module's scripts are doing |
+
+## Your CD key
+
+The cameraman logs in with your CD key, so the server checks it online like any other login.
+
+- **Don't play on the same key while it films.** Beamdog's master server allows one game per key,
+  so the cameraman can't join (nwn-director says so). A second CD key avoids that.
+- **Its user folder holds copies of your key files** (`cdkey.ini`, `nwncdkey.ini`,
+  `cryptographic_secret`) and settings, in `~/.cache/nwn-director/client` (or `--client-dir`).
+  Your haks, TLK and other content folders are linked, not copied. Delete that folder whenever
+  you like; it is made again on the next run.
+- **Now and then the master server can't check the key** and the server refuses the login ("unable
+  to verify your password"). If the cameraman hasn't joined after 2 minutes, nwn-director starts
+  the client once more, which usually gets in.
 
 ## Known limits
 
@@ -139,6 +157,16 @@ Options (`./director.py film --help` for all of them):
   on your screen.
 - **Character screen:** the Play button is clicked at its position on the default interface
   scale. If you changed the interface scale, the click may miss.
+
+## Tests
+
+```sh
+python3 -m unittest discover -v tests
+```
+
+They check the plain parts (routes, area lookup, shot options, settings, the contact sheet, how
+stills are timed) on made-up data, with no game, server or client; the contact sheet test needs
+ffmpeg. They run on every push and pull request. Filming itself is tested by hand on a real module.
 
 ## Licence
 
