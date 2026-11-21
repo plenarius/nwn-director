@@ -1,0 +1,228 @@
+{
+ "about": "GUI shots for director.py gui (README.md, \"GUI shots\"). Each shot: window (its pictures are <window>-<state>.png), phase (pregame: the client at the main menu; charselect: joined, at the character list; game: in the first room, the default), fresh (pregame only: start the client again first, so the shot starts from the main menu), steps run in order, then close. Positions are logical pixels at UI scale 1 (1280x720) from an anchor: c centre (the default), t/b/l/r edges, tl/tr/bl/br corners. Steps: nss (NWScript run on the player), key (xdotool key names), type (text), move/click/rclick/dclick/press [x, y] with anchor, release, scroll N (down; negative up) at [x, y], wait SECONDS, capture STATE, series STATE (count, every), loading STATE (count). expect: true on a step means the screen must change, then settle, after it.",
+ "shots": [
+  {"window": "mainmenu", "phase": "pregame", "steps": [
+   {"capture": "normal"},
+   {"move": [0, -35]},
+   {"capture": "hover"},
+   {"press": [0, 16]},
+   {"capture": "pressed"},
+   {"release": true}
+  ]},
+  {"window": "newgame", "phase": "pregame", "fresh": true, "steps": [
+   {"click": [0, -35], "expect": true, "steady": 3},
+   {"capture": "normal", "steady": 3}
+  ]},
+  {"window": "loadgame", "phase": "pregame", "fresh": true, "steps": [
+   {"click": [0, 16], "expect": true, "steady": 3},
+   {"capture": "normal", "steady": 3}
+  ]},
+  {"window": "multiplayer", "phase": "pregame", "fresh": true, "steps": [
+   {"click": [0, 67], "expect": true},
+   {"capture": "normal"}
+  ]},
+  {"window": "mainoptions", "phase": "pregame", "fresh": true, "steps": [
+   {"click": [0, 168], "expect": true},
+   {"capture": "normal"}
+  ]},
+
+  {"window": "charlist", "phase": "charselect", "steps": [
+   {"capture": "normal"},
+   {"move": [-200, -225]},
+   {"capture": "hover"},
+   {"click": [193, -226], "expect": true},
+   {"capture": "serverinfo"},
+   {"click": [313, -226], "expect": true},
+   {"capture": "playerlist"},
+   {"click": [74, -226]},
+   {"click": [148, -168], "expect": true},
+   {"capture": "skills"},
+   {"click": [-352, 177]},
+   {"capture": "pregenerated"},
+   {"click": [-352, 177]}
+  ]},
+  {"window": "chargen", "phase": "charselect", "steps": [
+   {"click": [-284, 231], "expect": true},
+   {"capture": "main"},
+   {"click": [-181, -187], "expect": true},
+   {"capture": "gender"},
+   {"move": [-184, -37]},
+   {"capture": "gender-hover"},
+   {"click": [97, 229], "expect": true},
+   {"click": [-181, -136], "expect": true},
+   {"capture": "race"},
+   {"click": [97, 229], "expect": true},
+   {"click": [-181, -86], "expect": true},
+   {"capture": "portrait"},
+   {"click": [-59, -173]},
+   {"capture": "portrait-selected"},
+   {"click": [97, 229], "expect": true},
+   {"click": [-181, -35], "expect": true},
+   {"capture": "class"},
+   {"move": [-194, -143]},
+   {"capture": "class-hover"},
+   {"click": [-194, -11]},
+   {"scroll": 3, "at": [-194, 100]},
+   {"capture": "class-scrolled"},
+   {"click": [97, 229], "expect": true},
+   {"click": [-181, 14], "expect": true},
+   {"capture": "alignment"},
+   {"click": [97, 229], "expect": true},
+   {"click": [-181, 64], "expect": true},
+   {"capture": "abilities"},
+   {"click": [-271, 229]},
+   {"capture": "abilities-recommended"},
+   {"click": [97, 229], "expect": true},
+   {"click": [-181, 115], "expect": true},
+   {"capture": "packages"},
+   {"click": [-94, 229], "expect": true},
+   {"capture": "skills"},
+   {"click": [-271, 229]},
+   {"click": [97, 229], "expect": true},
+   {"capture": "feats"},
+   {"click": [-271, 229]},
+   {"capture": "feats-recommended"},
+   {"click": [97, 229], "expect": true},
+   {"capture": "main-done"},
+   {"click": [-181, 166], "expect": true},
+   {"capture": "appearance"},
+   {"click": [-57, 68], "expect": true},
+   {"capture": "appearance-palette"},
+   {"click": [-57, 68]},
+   {"click": [97, 229], "expect": true},
+   {"click": [-232, -175]},
+   {"key": "End BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace"},
+   {"type": "Aldo"},
+   {"click": [-182, -128]},
+   {"key": "End BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace"},
+   {"type": "Brightwater"},
+   {"move": [174, -121]},
+   {"capture": "info"}
+  ], "close": [{"click": [274, 229], "expect": true}, {"click": [-60, 229], "expect": true}]},
+
+  {"window": "hud", "steps": [
+   {"nss": "SendMessageToPC(OBJECT_SELF, \"The quick brown fox jumps over the lazy dog. 0123456789\"); SendMessageToPC(OBJECT_SELF, \"Sphinx of black quartz, judge my vow!\");"},
+   {"capture": "normal"},
+   {"move": [-365, -17], "anchor": "b"},
+   {"capture": "quickbar-hover"},
+   {"move": [-60, 118], "anchor": "tr"},
+   {"capture": "modes-hover"},
+   {"nss": "SetMaxHenchmen(3); object h = CreateObject(OBJECT_TYPE_CREATURE, \"nw_hen_bod_01\", Location(GetArea(OBJECT_SELF), GetPosition(OBJECT_SELF) + Vector(2.0, 0.0, 0.0), 180.0), FALSE, \"DIR_TMP\"); AddHenchman(OBJECT_SELF, h); h = CreateObject(OBJECT_TYPE_CREATURE, \"nw_hen_gal_01\", Location(GetArea(OBJECT_SELF), GetPosition(OBJECT_SELF) + Vector(-2.0, 0.0, 0.0), 0.0), FALSE, \"DIR_TMP\"); AddHenchman(OBJECT_SELF, h);", "expect": true},
+   {"capture": "party"},
+   {"key": "Return"},
+   {"type": "Typing in the chat bar"},
+   {"capture": "chat-typing"},
+   {"key": "End BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace BackSpace Escape"}
+  ]},
+  {"window": "inventory", "steps": [
+   {"nss": "GiveGoldToCreature(OBJECT_SELF, 123456); CreateItemOnObject(\"nw_wswls001\"); CreateItemOnObject(\"nw_aarcl004\"); CreateItemOnObject(\"nw_it_mpotion001\", OBJECT_SELF, 5);"},
+   {"key": "i", "expect": true},
+   {"capture": "normal"},
+   {"move": [38, 370], "anchor": "tl"},
+   {"capture": "hover-item"},
+   {"move": [342, 268], "anchor": "tl"},
+   {"capture": "hover-tab"},
+   {"click": [342, 268], "anchor": "tl"},
+   {"capture": "tab-2"},
+   {"click": [342, 236], "anchor": "tl"}
+  ], "close": [{"key": "i"}]},
+  {"window": "examine", "steps": [
+   {"nss": "object o = GetItemPossessedBy(OBJECT_SELF, \"NW_WSWLS001\"); if (!GetIsObjectValid(o)) o = CreateItemOnObject(\"nw_wswls001\"); ActionExamine(o);", "expect": true},
+   {"capture": "item"}
+  ], "close": [{"key": "Escape"}]},
+  {"window": "character", "steps": [
+   {"key": "c", "expect": true},
+   {"capture": "normal"},
+   {"move": [200, 143], "anchor": "tl"},
+   {"capture": "hover-row"},
+   {"scroll": 3, "at": [180, 380], "anchor": "tl"},
+   {"capture": "scrolled"},
+   {"click": [135, 44], "anchor": "tl", "expect": true},
+   {"capture": "skills"},
+   {"click": [225, 44], "anchor": "tl", "expect": true},
+   {"capture": "feats"}
+  ], "close": [{"key": "c"}]},
+  {"window": "spellbook", "steps": [
+   {"key": "b", "expect": true},
+   {"capture": "normal"},
+   {"move": [150, 160], "anchor": "tl"},
+   {"capture": "hover-row"},
+   {"click": [150, 193], "anchor": "tl"},
+   {"capture": "selected"},
+   {"click": [22, 127], "anchor": "tl"},
+   {"capture": "collapsed"}
+  ], "close": [{"key": "b"}]},
+  {"window": "journal", "steps": [
+   {"key": "j", "expect": true},
+   {"capture": "normal"}
+  ], "close": [{"key": "j"}]},
+  {"window": "map", "steps": [
+   {"key": "m"},
+   {"capture": "normal"}
+  ], "close": [{"key": "m"}]},
+  {"window": "playerlist", "steps": [
+   {"key": "p", "expect": true},
+   {"capture": "normal"}
+  ], "close": [{"key": "p"}]},
+  {"window": "options", "steps": [
+   {"key": "Escape", "expect": true},
+   {"capture": "normal"},
+   {"move": [0, -86]},
+   {"capture": "hover"},
+   {"press": [0, -86]},
+   {"capture": "pressed"},
+   {"release": true},
+   {"click": [0, -86], "expect": true},
+   {"capture": "game-options"},
+   {"key": "Escape", "expect": true},
+   {"click": [0, -33], "expect": true},
+   {"capture": "resolution"},
+   {"key": "Escape", "expect": true},
+   {"click": [0, 73], "expect": true},
+   {"capture": "keys"},
+   {"key": "Escape", "expect": true}
+  ], "close": [{"click": [0, 192]}]},
+  {"window": "radial", "steps": [
+   {"rclick": [0, 10], "expect": true},
+   {"capture": "normal"},
+   {"move": [-72, -62]},
+   {"capture": "hover"}
+  ], "close": [{"key": "Escape"}]},
+  {"window": "store", "steps": [
+   {"nss": "OpenStore(CreateObject(OBJECT_TYPE_STORE, \"nw_storgenral001\", GetLocation(OBJECT_SELF), FALSE, \"DIR_TMP\"), OBJECT_SELF);", "expect": true},
+   {"capture": "normal"}
+  ], "close": [{"key": "Escape"}]},
+  {"window": "container", "steps": [
+   {"nss": "object c = CreateObject(OBJECT_TYPE_PLACEABLE, \"plc_chest1\", Location(GetArea(OBJECT_SELF), GetPosition(OBJECT_SELF) + Vector(0.0, 2.5, 0.0), 270.0), FALSE, \"DIR_TMP\"); object o = GetFirstItemInInventory(c); while (GetIsObjectValid(o)) { DestroyObject(o); o = GetNextItemInInventory(c); } CreateItemOnObject(\"nw_it_mpotion001\", c, 5); CreateItemOnObject(\"nw_wswls001\", c); CreateItemOnObject(\"nw_aarcl004\", c); SetLocked(c, FALSE); SetEventScript(c, EVENT_SCRIPT_PLACEABLE_ON_OPEN, \"\"); SetEventScript(c, EVENT_SCRIPT_PLACEABLE_ON_USED, \"\"); DelayCommand(0.5, AssignCommand(OBJECT_SELF, DoPlaceableObjectAction(c, PLACEABLE_ACTION_USE)));", "expect": true},
+   {"capture": "normal"},
+   {"move": [20, 180], "anchor": "tl"},
+   {"capture": "hover-item"},
+   {"move": [297, 200], "anchor": "tl"},
+   {"capture": "hover-close"}
+  ], "close": [{"click": [297, 200], "anchor": "tl"}]},
+  {"window": "dialog", "steps": [
+   {"nss": "object h = CreateObject(OBJECT_TYPE_CREATURE, \"nw_hen_gal_01\", Location(GetArea(OBJECT_SELF), GetPosition(OBJECT_SELF) + Vector(2.0, 0.0, 0.0), 180.0), FALSE, \"DIR_TMP\"); SetEventScript(h, EVENT_SCRIPT_CREATURE_ON_HEARTBEAT, \"\"); SetEventScript(h, EVENT_SCRIPT_CREATURE_ON_NOTICE, \"\"); DelayCommand(1.0, ActionStartConversation(h, \"\", FALSE, FALSE));", "expect": true},
+   {"capture": "normal"},
+   {"move": [100, 135], "anchor": "tl"},
+   {"capture": "hover-reply"}
+  ], "close": [{"key": "4"}]},
+  {"window": "rest", "steps": [
+   {"nss": "ActionRest(TRUE);"},
+   {"series": "bar", "count": 4, "every": 1.5}
+  ]},
+  {"window": "death", "steps": [
+   {"nss": "PopUpDeathGUIPanel(OBJECT_SELF);", "expect": true},
+   {"capture": "normal"},
+   {"move": [0, 29]},
+   {"capture": "hover"}
+  ], "close": [{"click": [0, 29]}]},
+  {"window": "levelup", "steps": [
+   {"nss": "GiveXPToCreature(OBJECT_SELF, 1000);"},
+   {"capture": "ready"}
+  ]},
+  {"window": "loadscreen", "steps": [
+   {"nss": "JumpToLocation(Location(GetObjectByTag(\"dir_gui_b\"), Vector(10.0, 15.0, 0.0), 270.0));"},
+   {"loading": "bar", "count": 3}
+  ]}
+ ]
+}
