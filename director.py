@@ -998,7 +998,16 @@ def main():
                    help='log every script the server runs (with --keep-server: docker logs nwn-director)')
     f.set_defaults(func=cmd_film)
 
+    import gui
+    gui.add_commands(sub, USER_DIR, SERVER_IMAGE)
+
     args = p.parse_args()
+    if args.command == 'gui':
+        user = os.path.expanduser(args.user_dir)
+        args.hak_dir = os.path.expanduser(args.hak_dir or os.path.join(user, 'hak'))
+        args.tlk_dir = os.path.expanduser(args.tlk_dir or os.path.join(user, 'tlk'))
+        if not os.path.exists(args.character):
+            die(f'no character at {args.character}')
     if args.command == 'film':
         user = os.path.expanduser(args.user_dir)
         args.hak_dir = os.path.expanduser(args.hak_dir or os.path.join(user, 'hak'))

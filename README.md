@@ -18,7 +18,9 @@ Spots can also be taken as **stills** (`--stills N`): N pictures around the plac
 sheet, from a game client drawing on the CPU in a virtual display of its own. That needs no GPU
 and leaves your desktop alone, so it can run on a server.
 
-Early days: more kinds of shots are planned.
+**GUI shots** (`director.py gui`) are pictures of the game's own interface (the old, non-NUI windows) in each
+of their states, so a hak that replaces interface textures or fonts can be checked by comparing pictures instead
+of by playing. See [GUI shots](#gui-shots).
 
 ## What it does
 
@@ -129,6 +131,88 @@ Options (`./director.py film --help` for all of them):
 | `--keep-server` | leave the server running afterwards (`docker logs nwn-director`) |
 | `--script-log` | log every script the server runs, to find what a module's scripts are doing |
 
+## GUI shots
+
+The old interface is drawn by the client alone, from the interface textures and fonts it finds (the base game's,
+or a hak's that replaces them), so only a real client can show it. `director.py gui` makes a small module of its
+own (two rooms of base game interior tiles, no scripts but nwn-director's `dir_gui`) that loads the haks you give
+it, starts it on a local server, and logs your client in, drawing on the CPU in a virtual display (Xvfb and
+llvmpipe, as for `--stills`). Then it works through a shot list, [gui_shots.json](gui_shots.json):
+
+- **Staging from the server.** Each shot can run NWScript on the player first (`dir_gui` reads it from a small
+  campaign database and runs it with `ExecuteScriptChunk`): open a store, a chest, a conversation, the death
+  panel, rest, give gold and items, add henchmen to the party bar, jump to the other room for a loading screen.
+- **Opening windows from the client** with the game's default keys (`i`, `c`, `b`, `j`, `m`, `p`, Escape) and
+  mouse clicks, moves (hover), presses (held down, released elsewhere) and scrolls, through xdotool.
+- **Capturing** once the picture has held still (it polls the screen; no fixed waits), or a series while a bar
+  fills (resting), or the loading screen while it lasts.
+
+```sh
+# The base game's interface, at UI scale 1 and 1.5.
+./director.py gui --character ~/.local/share/Neverwinter\ Nights/localvault/somechar.bic --out out/base
+
+# The same with a hak that replaces interface textures (in your hak folder), then what changed.
+./director.py gui mytheme --character ~/.local/share/Neverwinter\ Nights/localvault/somechar.bic --out out/theme
+./director.py gui-compare out/base out/theme
+
+# A module's haks and TLK (the module itself isn't run).
+./director.py gui ~/modules/mymodule.mod --character ~/.local/share/Neverwinter\ Nights/localvault/somechar.bic
+```
+
+Out come, per UI scale (`scale-1/`, `scale-1.5/`): `<window>-<state>.png` for each picture, `sheet.png` (all
+of them, named), `manifest.json` (each shot: its pictures, what was staged, and anything that failed: a window
+that didn't open, a picture that never held still), and `client.log`; and a `manifest.json` over both.
+`gui-compare A B` writes, for every picture the two runs share, a score (the share of pixels that changed and the
+mean difference) into `report.json`, most changed first, and for each changed one a side-by-side
+(`A | B | difference`), so a reviewer only looks at what changed. Pictures only one run has are listed too.
+
+| Option | |
+|---|---|
+| `SOURCE` | a module (`.mod`) whose haks and TLK to load, or haks (names in the hak folder), comma-separated, first wins |
+| `--character FILE` | the character to log in with (`.bic`), required: a spellcaster fills the spellbook |
+| `--scale 1,1.5` | UI scales to run at; the screen is 1280x720 at 1, and as much bigger at other scales |
+| `--shots FILE` | another shot list |
+| `--only A,B` | only these windows of the shot list |
+| `--haks`, `--module`, `--tlk` | the same as SOURCE, as options; `--tlk` a custom TLK |
+| `--out DIR`, `--game DIR`, `--user-dir DIR`, `--hak-dir DIR`, `--tlk-dir DIR`, `--port N`, `--image IMAGE` | as for `film` |
+| `--client-dir DIR` | the GUI client's own user folder (default `~/.cache/nwn-director/gui-client`) |
+
+**Deterministic:** the client's settings are written afresh before every run (no key bindings or window layout
+of yours: its folder is its own, and `nwnplayer.ini` and `settings.tml` are deleted first), so every window opens
+where the game puts it by default. The time is noon, the camera is fixed looking down at the floor, the
+interface's mouse-over and floating feedback is off, and each in-game shot starts from the same place with the
+shot's objects (tagged `DIR_TMP`) and henchmen removed. Positions in the shot list are logical pixels at UI scale 1
+from an anchor (centre, an edge or a corner), which is how the game lays out its windows, so the same list works
+at every scale.
+
+**What it captures** (the shipped list: 23 windows, about 80 pictures per scale): the main menu (normal, hover,
+pressed), the module list, saved games, the multiplayer menu, the options screen; the character list (hover, its
+server and player tabs, a record tab, the pregenerated characters); every page of character creation (gender,
+race, portrait, class with a hover and a scrolled list, alignment, abilities, packages, skills, feats, appearance
+and its colour palette, name and voice); in game the HUD (chat, quickbar and mode buttons hovered, a party of
+three, typing in the chat bar), inventory (hovered item, second bag tab), an item's examine window, character
+record (hover, scroll, skills, feats), spellbook (hover, select, collapse), journal, map, player list, options
+(hover, pressed, game options, resolution, keys), radial menu (hover), store, container, conversation (hovered
+reply), the rest bar at four fills, the death panel and the loading screen.
+
+**Limits:**
+
+- **Fixed pixel positions.** Clicks follow the game's default layout; a hak that moves or resizes windows (a
+  different `.gui` layout, not just textures) can make a click miss. The manifest then says which step didn't
+  change the screen.
+- **Not reachable without a person or another server:** the server browser's lists (they come from the master
+  server), the level-up wizard (`GUI_PANEL_LEVELUP` can't be opened from a script, and the level-up button sits
+  in a layout that changes with the character), barter (needs a second player), dungeon master windows, and
+  anything that needs a keyboard binding the player changed.
+- **The loading screen** is caught at whatever fills the load allows (three, with the big second room), and the
+  tip under it is chosen at random by the game, so it differs between runs.
+- **Pre-game screens** with an animated background are saved once they hold still to a looser measure, so two
+  runs can differ a little there.
+- **A connected client can't be restarted at once:** the server holds a killed client's CD key for minutes. So
+  the character-list shots run in one client that then goes into the game, and it leaves the server (booted by
+  the server) before it is stopped.
+- **Your CD key is busy while it runs**, as for filming.
+
 ## Your CD key
 
 The cameraman logs in with your CD key, so the server checks it online like any other login.
@@ -165,8 +249,9 @@ python3 -m unittest discover -v tests
 ```
 
 They check the plain parts (routes, area lookup, shot options, settings, the contact sheet, how
-stills are timed) on made-up data, with no game, server or client; the contact sheet test needs
-ffmpeg. They run on every push and pull request. Filming itself is tested by hand on a real module.
+stills are timed; for GUI shots the shot list, positions at each UI scale, waiting for a window to settle, the
+generated module, staging and input steps, and comparing two runs) on made-up data, with no game, server or
+client; the picture tests need ffmpeg. They run on every push and pull request. Filming itself is tested by hand on a real module.
 
 ## Licence
 

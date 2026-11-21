@@ -47,8 +47,11 @@ void Dir_WaitIn(object oPC, int nTries)
         return;
     if (GetIsObjectValid(GetArea(oPC)))
     {
+        // Steps written for an earlier login are done: a client that joins again starts after them.
+        sqlquery q = SqlPrepareQueryCampaign("director", "SELECT COALESCE(MAX(n), 0) FROM steps");
+        int nDone = SqlStep(q) ? SqlGetInt(q, 0) : 0;
         Dir_Log("player in");
-        Dir_Poll(oPC, 0);
+        Dir_Poll(oPC, nDone);
         return;
     }
     if (nTries < 600)
