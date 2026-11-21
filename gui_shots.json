@@ -109,8 +109,6 @@
    {"capture": "modes-hover"},
    {"nss": "SetMaxHenchmen(3); object h = CreateObject(OBJECT_TYPE_CREATURE, \"nw_hen_bod_01\", Location(GetArea(OBJECT_SELF), GetPosition(OBJECT_SELF) + Vector(2.0, 0.0, 0.0), 180.0), FALSE, \"DIR_TMP\"); AddHenchman(OBJECT_SELF, h); h = CreateObject(OBJECT_TYPE_CREATURE, \"nw_hen_gal_01\", Location(GetArea(OBJECT_SELF), GetPosition(OBJECT_SELF) + Vector(-2.0, 0.0, 0.0), 0.0), FALSE, \"DIR_TMP\"); AddHenchman(OBJECT_SELF, h);", "expect": true},
    {"capture": "party"},
-   {"nss": "GiveXPToCreature(OBJECT_SELF, 1000);"},
-   {"capture": "levelup"},
    {"key": "Return"},
    {"type": "Typing in the chat bar"},
    {"capture": "chat-typing"},
@@ -195,7 +193,7 @@
    {"capture": "normal"}
   ], "close": [{"key": "Escape"}]},
   {"window": "container", "steps": [
-   {"nss": "object c = CreateObject(OBJECT_TYPE_PLACEABLE, \"plc_chest1\", Location(GetArea(OBJECT_SELF), GetPosition(OBJECT_SELF) + Vector(0.0, 2.5, 0.0), 270.0), FALSE, \"DIR_TMP\"); CreateItemOnObject(\"nw_it_mpotion001\", c, 5); CreateItemOnObject(\"nw_wswls001\", c); CreateItemOnObject(\"nw_aarcl004\", c); SetLocked(c, FALSE); DelayCommand(0.5, AssignCommand(OBJECT_SELF, DoPlaceableObjectAction(c, PLACEABLE_ACTION_USE)));", "expect": true},
+   {"nss": "object c = CreateObject(OBJECT_TYPE_PLACEABLE, \"plc_chest1\", Location(GetArea(OBJECT_SELF), GetPosition(OBJECT_SELF) + Vector(0.0, 2.5, 0.0), 270.0), FALSE, \"DIR_TMP\"); object o = GetFirstItemInInventory(c); while (GetIsObjectValid(o)) { DestroyObject(o); o = GetNextItemInInventory(c); } CreateItemOnObject(\"nw_it_mpotion001\", c, 5); CreateItemOnObject(\"nw_wswls001\", c); CreateItemOnObject(\"nw_aarcl004\", c); SetLocked(c, FALSE); SetEventScript(c, EVENT_SCRIPT_PLACEABLE_ON_OPEN, \"\"); SetEventScript(c, EVENT_SCRIPT_PLACEABLE_ON_USED, \"\"); DelayCommand(0.5, AssignCommand(OBJECT_SELF, DoPlaceableObjectAction(c, PLACEABLE_ACTION_USE)));", "expect": true},
    {"capture": "normal"},
    {"move": [20, 180], "anchor": "tl"},
    {"capture": "hover-item"},
@@ -203,7 +201,7 @@
    {"capture": "hover-close"}
   ], "close": [{"click": [297, 200], "anchor": "tl"}]},
   {"window": "dialog", "steps": [
-   {"nss": "SetMaxHenchmen(3); object h = CreateObject(OBJECT_TYPE_CREATURE, \"nw_hen_gal_01\", Location(GetArea(OBJECT_SELF), GetPosition(OBJECT_SELF) + Vector(2.0, 0.0, 0.0), 180.0), FALSE, \"DIR_TMP\"); AddHenchman(OBJECT_SELF, h); DelayCommand(1.0, ActionStartConversation(h, \"\", FALSE, FALSE));", "expect": true},
+   {"nss": "object h = CreateObject(OBJECT_TYPE_CREATURE, \"nw_hen_gal_01\", Location(GetArea(OBJECT_SELF), GetPosition(OBJECT_SELF) + Vector(2.0, 0.0, 0.0), 180.0), FALSE, \"DIR_TMP\"); SetEventScript(h, EVENT_SCRIPT_CREATURE_ON_HEARTBEAT, \"\"); SetEventScript(h, EVENT_SCRIPT_CREATURE_ON_NOTICE, \"\"); DelayCommand(1.0, ActionStartConversation(h, \"\", FALSE, FALSE));", "expect": true},
    {"capture": "normal"},
    {"move": [100, 135], "anchor": "tl"},
    {"capture": "hover-reply"}
@@ -218,6 +216,10 @@
    {"move": [0, 29]},
    {"capture": "hover"}
   ], "close": [{"click": [0, 29]}]},
+  {"window": "levelup", "steps": [
+   {"nss": "GiveXPToCreature(OBJECT_SELF, 1000);"},
+   {"capture": "ready"}
+  ]},
   {"window": "loadscreen", "steps": [
    {"nss": "JumpToLocation(Location(GetObjectByTag(\"dir_gui_b\"), Vector(10.0, 15.0, 0.0), 270.0));"},
    {"loading": "bar", "count": 3}

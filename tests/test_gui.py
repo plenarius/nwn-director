@@ -245,6 +245,16 @@ class Pictures(unittest.TestCase):
             with open(os.path.join(out, 'report.json')) as f:
                 self.assertEqual(len(json.load(f)['shots']), 2)
 
+    def test_a_scale_only_one_run_has_is_one_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for run, scales in (('a', ('scale-1', 'scale-1.5')), ('b', ('scale-1',))):
+                for sc in scales:
+                    os.makedirs(os.path.join(tmp, run, sc))
+                    self.picture(os.path.join(tmp, run, sc, 'x-normal.png'), 'gray')
+            rows, only = gui.compare(os.path.join(tmp, 'a'), os.path.join(tmp, 'b'), os.path.join(tmp, 'cmp'))
+            self.assertEqual([r['shot'] for r in rows], ['scale-1/x-normal.png'])
+            self.assertEqual(only, ['scale-1.5/'])
+
     def test_sheet(self):
         with tempfile.TemporaryDirectory() as tmp:
             pics = []

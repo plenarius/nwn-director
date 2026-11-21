@@ -179,9 +179,13 @@ mean difference) into `report.json`, most changed first, and for each changed on
 
 **Deterministic:** the client's settings are written afresh before every run (no key bindings or window layout
 of yours: its folder is its own, and `nwnplayer.ini` and `settings.tml` are deleted first), so every window opens
-where the game puts it by default. The time is noon, the camera is fixed looking down at the floor, the
-interface's mouse-over and floating feedback is off, and each in-game shot starts from the same place with the
-shot's objects (tagged `DIR_TMP`) and henchmen removed. Positions in the shot list are logical pixels at UI scale 1
+where the game puts it by default. The room the windows are photographed in has no light (no ambient, sun or
+tile lights, black fog), so they are drawn over a dark, still floor: the world moves a fraction of a pixel between
+runs (the conversation camera, a camera easing in), which would otherwise show up as change all over the picture.
+The time is noon, the camera is fixed looking down, the interface's mouse-over and floating feedback is off, and
+each in-game shot starts from the same place with the shot's objects (tagged `DIR_TMP`, their own scripts
+cleared, so a chest holds only what the shot put in it) and henchmen removed. Two runs of the same haks differ in
+under 0.1% of the pixels of any in-game picture. Positions in the shot list are logical pixels at UI scale 1
 from an anchor (centre, an edge or a corner), which is how the game lays out its windows, so the same list works
 at every scale.
 
@@ -190,7 +194,7 @@ pressed), the module list, saved games, the multiplayer menu, the options screen
 server and player tabs, a record tab, the pregenerated characters); every page of character creation (gender,
 race, portrait, class with a hover and a scrolled list, alignment, abilities, packages, skills, feats, appearance
 and its colour palette, name and voice); in game the HUD (chat, quickbar and mode buttons hovered, a party of
-three, typing in the chat bar), inventory (hovered item, second bag tab), an item's examine window, character
+three, typing in the chat bar, a level-up waiting), inventory (hovered item, second bag tab), an item's examine window, character
 record (hover, scroll, skills, feats), spellbook (hover, select, collapse), journal, map, player list, options
 (hover, pressed, game options, resolution, keys), radial menu (hover), store, container, conversation (hovered
 reply), the rest bar at four fills, the death panel and the loading screen.
@@ -204,14 +208,19 @@ reply), the rest bar at four fills, the death panel and the loading screen.
   server), the level-up wizard (`GUI_PANEL_LEVELUP` can't be opened from a script, and the level-up button sits
   in a layout that changes with the character), barter (needs a second player), dungeon master windows, and
   anything that needs a keyboard binding the player changed.
-- **The loading screen** is caught at whatever fills the load allows (three, with the big second room), and the
+- **The loading screen** is caught at whatever fills the load allows (two or three, with the big second room), and the
   tip under it is chosen at random by the game, so it differs between runs.
-- **Pre-game screens** with an animated background are saved once they hold still to a looser measure, so two
-  runs can differ a little there.
+- **Pre-game screens** with an animated background (the module list, saved games) are saved once they hold
+  still to a looser measure; the background is caught at a different moment each run, so `gui-compare` scores
+  them as changed even when the window isn't. Their side-by-side shows which it is.
+- **Comparing is slowish:** about a minute for two runs of both scales (the scoring is plain Python).
 - **A connected client can't be restarted at once:** the server holds a killed client's CD key for minutes. So
   the character-list shots run in one client that then goes into the game, and it leaves the server (booted by
   the server) before it is stopped.
 - **Your CD key is busy while it runs**, as for filming.
+
+**How long:** on a busy 4-core desktop, about 5 minutes per UI scale (79 pictures; 11 minutes for 1 and 1.5),
+most of it the client drawing on the CPU and each picture holding still for a second before it is saved.
 
 ## Your CD key
 

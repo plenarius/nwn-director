@@ -52,12 +52,14 @@ def field(kind, value):
     return {'type': kind, 'value': value}
 
 
-def room(resref, name, size=ROOM_SIZE):
-    """A room of ROOM_TILES (repeated to fill size) as .are and .git (nwn_gff JSON)."""
+def room(resref, name, size=ROOM_SIZE, dark=False):
+    """A room of ROOM_TILES (repeated to fill size) as .are and .git (nwn_gff JSON); dark: no light at all, so the
+    windows are drawn over black and a picture changes only where the interface does."""
+    lit = 0 if dark else 1
     pattern = ROOM_TILES * -(-size[0] * size[1] // len(ROOM_TILES))
     tiles = [{'__struct_id': 1, 'Tile_ID': field('int', t), 'Tile_Orientation': field('int', o),
               'Tile_Height': field('int', 0), 'Tile_MainLight1': field('byte', 0),
-              'Tile_MainLight2': field('byte', 0), 'Tile_SrcLight1': field('byte', 8),
+              'Tile_MainLight2': field('byte', 0), 'Tile_SrcLight1': field('byte', 8 * lit),
               'Tile_SrcLight2': field('byte', 0), 'Tile_AnimLoop1': field('byte', 1),
               'Tile_AnimLoop2': field('byte', 1), 'Tile_AnimLoop3': field('byte', 1)}
              for t, o in pattern[:size[0] * size[1]]]
@@ -75,8 +77,9 @@ def room(resref, name, size=ROOM_SIZE):
            'OnEnter': field('resref', ''), 'OnExit': field('resref', ''), 'OnHeartbeat': field('resref', ''),
            'OnUserDefined': field('resref', '')}
     for light in ('Sun', 'Moon'):
-        are.update({f'{light}AmbientColor': field('dword', 0x404040), f'{light}DiffuseColor': field('dword', 0x808080),
-                    f'{light}FogAmount': field('byte', 0), f'{light}FogColor': field('dword', 0),
+        are.update({f'{light}AmbientColor': field('dword', 0x404040 * lit),
+                    f'{light}DiffuseColor': field('dword', 0x808080 * lit),
+                    f'{light}FogAmount': field('byte', 0 if lit else 15), f'{light}FogColor': field('dword', 0),
                     f'{light}Shadows': field('byte', 0)})
     props = {'__struct_id': 100, 'AmbientSndDay': field('int', 0), 'AmbientSndDayVol': field('int', 0),
              'AmbientSndNight': field('int', 0), 'AmbientSndNitVol': field('int', 0), 'EnvAudio': field('int', 0),
@@ -127,7 +130,9 @@ def make_module(game, work, haks, tlk):
     src = os.path.join(work, 'module')
     os.makedirs(src, exist_ok=True)
     for i, resref in enumerate(GUI_AREAS):
-        are, git = room(resref, f'Room {i + 1}', BIG_ROOM if i else ROOM_SIZE)
+        # The first room, where the windows are photographed, is dark: the world moves a fraction of a pixel
+        # between runs (the conversation camera, a camera easing in) and would hide the interface's changes.
+        are, git = room(resref, f'Room {i + 1}', BIG_ROOM if i else ROOM_SIZE, dark=not i)
         d.write_gff(are, os.path.join(src, resref + '.are'))
         d.write_gff(git, os.path.join(src, resref + '.git'))
     d.write_gff(module_ifo(haks, tlk, list(GUI_AREAS)), os.path.join(src, 'module.ifo'))
@@ -790,7 +795,8 @@ def difference(a, b):
 def side_by_side(a, b, path):
     """a | b | their difference (brightened), one picture."""
     w, h = COMPARE_SIZE
-    graph = (f'[0:v]scale={w}:{h},split[a][a2];[1:v]scale={w}:{h},split[b][b2];'
+    # In RGB: a difference blend in YUV turns unchanged pixels green.
+    graph = (f'[0:v]scale={w}:{h},format=gbrp,split[a][a2];[1:v]scale={w}:{h},format=gbrp,split[b][b2];'
              f'[a2][b2]blend=all_mode=difference,eq=brightness=0.2:contrast=3[d];[a][b][d]hstack=inputs=3')
     subprocess.run(['ffmpeg', '-v', 'error', '-y', '-i', a, '-i', b, '-filter_complex', graph, '-frames:v', '1',
                     path], check=False)
@@ -801,9 +807,11 @@ def compare(dir_a, dir_b, out):
     and a report sorted most changed first (report.json), plus the pictures only one run has."""
     os.makedirs(out, exist_ok=True)
     rows, only = [], []
-    scales = sorted({s for s in os.listdir(dir_a) if s.startswith('scale-')} |
-                    {s for s in os.listdir(dir_b) if s.startswith('scale-')})
-    for scale in scales or ['']:
+    in_a = {s for s in os.listdir(dir_a) if s.startswith('scale-')}
+    in_b = {s for s in os.listdir(dir_b) if s.startswith('scale-')}
+    # A UI scale only one run has is one line, not every picture in it.
+    only += [s + '/' for s in sorted(in_a ^ in_b)]
+    for scale in sorted(in_a & in_b) or ([''] if not in_a | in_b else []):
         a_dir, b_dir = os.path.join(dir_a, scale), os.path.join(dir_b, scale)
         a = {f for f in os.listdir(a_dir) if f.endswith('.png') and f != 'sheet.png'} if os.path.isdir(a_dir) else set()
         b = {f for f in os.listdir(b_dir) if f.endswith('.png') and f != 'sheet.png'} if os.path.isdir(b_dir) else set()
