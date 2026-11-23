@@ -36,6 +36,8 @@ import tempfile
 import threading
 import time
 
+__version__ = '0.1.0'
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONTAINER = 'nwn-director'
 SERVER_IMAGE = 'ghcr.io/urothis/nwserver:8193.37.17'
@@ -962,6 +964,7 @@ def shot_specs(args):
 
 def main():
     p = argparse.ArgumentParser(description='Film NWN:EE module areas: walkthroughs, spots, events and stills.')
+    p.add_argument('--version', action='version', version='%(prog)s ' + __version__)
     sub = p.add_subparsers(dest='command', required=True)
 
     a = sub.add_parser('areas', help="list a module's areas")
