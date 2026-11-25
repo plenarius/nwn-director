@@ -230,8 +230,9 @@ The cameraman logs in with your CD key, so the server checks it online like any 
   so the cameraman can't join (nwn-director says so). A second CD key avoids that.
 - **Its user folder holds copies of your key files** (`cdkey.ini`, `nwncdkey.ini`,
   `cryptographic_secret`) and settings, in `~/.cache/nwn-director/client` (or `--client-dir`).
-  Your haks, TLK and other content folders are linked, not copied. Delete that folder whenever
-  you like; it is made again on the next run.
+  Your haks, TLK and other content folders are linked, not copied. Its logs, saves, temp files and
+  caches stay in it, never in your user folder. Delete that folder whenever you like; it is made
+  again on the next run.
 - **Now and then the master server can't check the key** and the server refuses the login ("unable
   to verify your password"). If the cameraman hasn't joined after 2 minutes, nwn-director starts
   the client once more, which usually gets in.

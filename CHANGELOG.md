@@ -2,6 +2,14 @@
 
 Versions follow [Semantic Versioning](https://semver.org/). Before 1.0, a minor version may change options or output names.
 
+## Unreleased
+
+- **`film`: clips keep real time.** On a busy machine the recorder missed frames and the clip came out shorter than
+  the shot, playing fast (an 18 s clip of a 20 s circle), so clips of the same shot length fell out of step. A missed
+  frame is now shown twice instead.
+- **`film`: the cameraman stays out of your user folder.** Its `nwn.ini` was a copy of yours, whose folder aliases sent
+  its logs, saves, temp files, caches and databases into your user folder. They now point at its own.
+
 ## 0.1.0
 
 The first release.

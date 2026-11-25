@@ -524,6 +524,31 @@ def client_settings(src, dst, settings):
         f.writelines(out)
 
 
+def client_aliases(ini, user, cdir):
+    """The player's nwn.ini names every folder (saves, logs, temp, vaults, databases, caches) by its full path in
+    their user folder, under [Alias]; left so, the cameraman would write into those. Point the ones inside the
+    user folder at the same place in the client's; others (a hak folder elsewhere) stay."""
+    if not os.path.exists(ini):
+        return
+    user = os.path.normpath(user)
+    with open(ini, encoding='utf-8', errors='replace') as fh:
+        lines = fh.readlines()
+    section = ''
+    for i, line in enumerate(lines):
+        m = re.match(r'\s*\[([^\]]+)\]\s*$', line)
+        if m:
+            section = m.group(1).strip().lower()
+            continue
+        m = re.match(r'(\s*[A-Za-z0-9_]+\s*=\s*)(.*?)\s*$', line)
+        if section == 'alias' and m:
+            path = os.path.normpath(m.group(2))
+            if path == user or path.startswith(user + os.sep):
+                slash = os.sep if m.group(2).endswith(os.sep) else ''
+                lines[i] = m.group(1) + cdir + path[len(user):] + slash + '\n'
+    with open(ini, 'w', encoding='utf-8') as f:
+        f.writelines(lines)
+
+
 def prepare_client(args):
     """The cameraman's own user folder, made from the player's: their keys and haks, film settings,
     and a local vault holding only the cameraman's character."""
@@ -533,6 +558,7 @@ def prepare_client(args):
     for f in ('cdkey.ini', 'nwncdkey.ini', 'cryptographic_secret', 'nwn.ini', 'nwnplayer.ini', 'userpatch.ini'):
         if os.path.exists(os.path.join(user, f)):
             shutil.copy2(os.path.join(user, f), os.path.join(cdir, f))
+    client_aliases(os.path.join(cdir, 'nwn.ini'), user, cdir)
     for d in ['hak', 'tlk', 'patch', 'override', 'portraits', 'music', 'ambient', 'movies'] + \
             [os.path.basename(h) for h in glob.glob(os.path.join(user, '*.hak'))]:
         src, dst = os.path.join(user, d), os.path.join(cdir, d)
@@ -701,11 +727,14 @@ def record(path, size):
     """Record the screen, and the game's sound from the default output's monitor, to path."""
     monitor = shutil.which('pactl') and subprocess.run(['pactl', 'get-default-sink'], capture_output=True,
                                                        text=True).stdout.strip()
-    cmd = ['ffmpeg', '-v', 'error', '-y', '-f', 'x11grab', '-framerate', '60', '-video_size', size,
-           '-draw_mouse', '0', '-i', os.environ['DISPLAY']]
+    # Wall-clock timestamps and a constant 60 fps out: on a busy machine x11grab misses frames, and without these
+    # the clip came out shorter than the shot and played fast (an 18 s clip of a 20 s circle); now a missed frame
+    # is shown twice and the clip keeps real time, so clips of the same shot length stay in step.
+    cmd = ['ffmpeg', '-v', 'error', '-y', '-use_wallclock_as_timestamps', '1', '-f', 'x11grab', '-framerate', '60',
+           '-video_size', size, '-draw_mouse', '0', '-i', os.environ['DISPLAY']]
     if monitor:
-        cmd += ['-f', 'pulse', '-i', monitor + '.monitor']
-    cmd += encoder() + ['-pix_fmt', 'yuv420p']
+        cmd += ['-use_wallclock_as_timestamps', '1', '-f', 'pulse', '-i', monitor + '.monitor']
+    cmd += encoder() + ['-pix_fmt', 'yuv420p', '-fps_mode', 'cfr', '-r', '60']
     if monitor:
         cmd += ['-c:a', 'aac', '-b:a', '192k']
     return subprocess.Popen(cmd + [path], stdin=subprocess.DEVNULL)
