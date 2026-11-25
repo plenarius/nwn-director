@@ -283,6 +283,20 @@ class ClientSettings(unittest.TestCase):
         self.assertEqual(t['graphics']['grass']['mode'], 0)
 
 
+class ClientAliases(unittest.TestCase):
+    def test_player_folders_moved_to_client(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp)
+        ini = os.path.join(tmp, 'nwn.ini')
+        with open(ini, 'w') as fh:
+            fh.write('[Alias]\nSAVES=/home/p/NWN/saves\nHD0=/home/p/NWN/\nHAK=/srv/haks\n'
+                     'LOGS=/home/p/NWN2/logs\n[Display Options]\nSAVES=/home/p/NWN/saves\n')
+        d.client_aliases(ini, '/home/p/NWN', '/c')
+        with open(ini) as fh:
+            self.assertEqual(fh.read(), '[Alias]\nSAVES=/c/saves\nHD0=/c/\nHAK=/srv/haks\nLOGS=/home/p/NWN2/logs\n'
+                                        '[Display Options]\nSAVES=/home/p/NWN/saves\n')
+
+
 class ServerLogLines(unittest.TestCase):
     def log(self, *lines):
         slog = d.ServerLog.__new__(d.ServerLog)
