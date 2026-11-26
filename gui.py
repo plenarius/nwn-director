@@ -483,10 +483,7 @@ def gui_client(args, scale):
             os.symlink(os.path.realpath(src), dst)
     settings = {**d.CLIENT_SETTINGS, **d.STILLS_SETTINGS, **GUI_SETTINGS, ('ui', 'scale'): f'{scale:.1f}'}
     d.client_settings(None, os.path.join(cdir, 'settings.tml'), settings)
-    vault = os.path.join(cdir, 'localvault')
-    shutil.rmtree(vault, ignore_errors=True)
-    os.makedirs(vault)
-    shutil.copy2(args.character, vault)
+    d.vault_character(cdir, args.character)
     return cdir
 
 

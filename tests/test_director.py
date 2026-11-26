@@ -297,6 +297,25 @@ class ClientAliases(unittest.TestCase):
                                         '[Display Options]\nSAVES=/home/p/NWN/saves\n')
 
 
+class VaultCharacter(unittest.TestCase):
+    def test_only_the_character_under_our_name(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            char = os.path.join(tmp, 'barbarian.bic')   # a pregenerated character's name
+            with open(char, 'wb') as f:
+                f.write(b'BIC V3.2')
+            vault = os.path.join(tmp, 'client', 'localvault')
+            os.makedirs(vault)
+            open(os.path.join(vault, 'old.bic'), 'wb').close()
+            d.vault_character(os.path.join(tmp, 'client'), char)
+            self.assertEqual(os.listdir(vault), [d.VAULT_NAME])
+            with open(os.path.join(vault, d.VAULT_NAME), 'rb') as f:
+                self.assertEqual(f.read(), b'BIC V3.2')
+            self.assertLessEqual(len(os.path.splitext(d.VAULT_NAME)[0]), 16)
+        finally:
+            shutil.rmtree(tmp)
+
+
 class ServerLogLines(unittest.TestCase):
     def log(self, *lines):
         slog = d.ServerLog.__new__(d.ServerLog)
