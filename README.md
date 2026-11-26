@@ -267,6 +267,9 @@ The cameraman logs in with your CD key, so the server checks it online like any 
   Your haks, TLK and other content folders are linked, not copied. Its logs, saves, temp files and
   caches stay in it, never in your user folder. Delete that folder whenever you like; it is made
   again on the next run.
+- **The key is read from `cdkey.ini`** in your user folder, as `YourKey=` under `[NWN1]` (a Steam or GOG
+  client can do without it). Without it the client stops at "Could not translate address", which is about the key,
+  not the address; nwn-director warns before it starts.
 - **Now and then the master server can't check the key** and the server refuses the login ("unable
   to verify your password"). If the cameraman hasn't joined after 2 minutes, nwn-director starts
   the client once more, which usually gets in.

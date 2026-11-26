@@ -576,11 +576,24 @@ def prepare_client(args):
             os.symlink(src, dst)
     settings = {**CLIENT_SETTINGS, **(STILLS_SETTINGS if args.stills else OFFSCREEN_SETTINGS if args.vglrun else {})}
     client_settings(os.path.join(user, 'settings.tml'), os.path.join(cdir, 'settings.tml'), settings)
+    if not os.path.exists(os.path.join(user, 'cdkey.ini')):
+        log(f'no cdkey.ini in {user}: the client reads its CD key only from there ([NWN1] YourKey=...); without it '
+            'and without Steam or GOG, it stops at "Could not translate address"')
+    vault_character(cdir, args.character)
+    return cdir
+
+
+# The cameraman's file name in the client's local vault. The client leaves a local vault character out of the list
+# when a pregenerated character has its name (barbarian.bic, fighter.bic: the game's own data/lcv), so Play did nothing.
+VAULT_NAME = 'nwndirector.bic'
+
+
+def vault_character(cdir, character):
+    """A fresh local vault in cdir holding only the character, as VAULT_NAME."""
     vault = os.path.join(cdir, 'localvault')
     shutil.rmtree(vault, ignore_errors=True)
     os.makedirs(vault)
-    shutil.copy2(args.character, vault)
-    return cdir
+    shutil.copy2(character, os.path.join(vault, VAULT_NAME))
 
 
 def start_client(args, game, cdir, logfile):

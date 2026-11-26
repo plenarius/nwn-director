@@ -15,6 +15,11 @@ Versions follow [Semantic Versioning](https://semver.org/). Before 1.0, a minor 
   frame is now shown twice instead.
 - **`film`: the cameraman stays out of your user folder.** Its `nwn.ini` was a copy of yours, whose folder aliases sent
   its logs, saves, temp files, caches and databases into your user folder. They now point at its own.
+- **Any character works, a pregenerated one too.** The client leaves a local vault character out of its list when one
+  of the game's pregenerated characters has the same file name (`barbarian.bic`), so the list stayed empty and Play did
+  nothing. The cameraman's copy is now always `nwndirector.bic`.
+- **A missing `cdkey.ini` is named.** The client reads its key only from `cdkey.ini` (`[NWN1]`, `YourKey=`); without
+  one it stops at "Could not translate address", which says nothing about the key. nwn-director now says so first.
 
 ## 0.1.0
 
