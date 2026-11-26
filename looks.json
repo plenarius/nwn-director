@@ -1,0 +1,38 @@
+{
+  "golden-hour": {
+    "name": "Golden hour",
+    "light": {"ambient": "#5b4f3c", "diffuse": "#e1c86f", "fog": "#b9a04a", "fogAmount": 10, "shadows": true, "fogClip": 150},
+    "time": "dusk",
+    "sky": 1,
+    "fog": {"color": "#e0a050", "amount": 12, "fade": 8},
+    "tileLight": "TILE_MAIN_LIGHT_COLOR_PALE_ORANGE"
+  },
+  "misty-dawn": {
+    "name": "Misty dawn",
+    "light": {"ambient": "#707070", "diffuse": "#b0b0b0", "fog": "#c8c8c8", "fogAmount": 25, "shadows": false, "fogClip": 60},
+    "time": "dawn",
+    "sky": 3,
+    "fog": {"color": "#c8c4c0", "amount": 25},
+    "mist": {"water": 791, "hollow": 15608, "max": 12, "range": 40}
+  },
+  "moonlit": {
+    "name": "Moonlit",
+    "light": {"ambient": "#0a0a18", "diffuse": "#3c4878", "fog": "#05070f", "fogAmount": 12, "shadows": true, "fogClip": 150},
+    "time": "night",
+    "sky": 3,
+    "fog": {"color": "#0a0f1e", "amount": 12},
+    "tileLight": "TILE_MAIN_LIGHT_COLOR_PALE_DARK_BLUE",
+    "moon": {"light": "VFX_DUR_LIGHT_BLUE_20", "height": 16}
+  },
+  "storm": {
+    "name": "Storm",
+    "light": {"ambient": "#454950", "diffuse": "#a8a693", "fog": "#7a7a7a", "fogAmount": 14, "shadows": false, "fogClip": 120},
+    "time": "day",
+    "sky": 2,
+    "weather": "WEATHER_RAIN",
+    "wind": {"direction": [1.0, 1.0, 0.0], "magnitude": 2.0, "yaw": 150.0, "pitch": 5.0},
+    "fog": {"color": "#7a7a7a", "amount": 18},
+    "takeFog": "#4a4e55",
+    "lightning": {"effect": "VFX_IMP_LIGHTNING_M", "every": [4, 9], "distance": [15, 30]}
+  }
+}

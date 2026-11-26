@@ -14,6 +14,8 @@ sound.
   line of NWScript you give it (open a door, cast a spell, spawn a creature), so the clip shows
   what the engine really does.
 
+Any shot can be filmed in a **look** (`--look`): golden hour, misty dawn, moonlit or storm. See [Looks](#looks).
+
 Spots can also be taken as **stills** (`--stills N`): N pictures around the place and a contact
 sheet, from a game client drawing on the CPU in a virtual display of its own. That needs no GPU
 and leaves your desktop alone, so it can run on a server.
@@ -42,7 +44,7 @@ of by playing. See [GUI shots](#gui-shots).
    once. The cameraman is
    invisible and ethereal (Greater Sanctuary), so nothing notices or attacks it. Before rolling,
    it steps into every encounter so the area's monsters and wildlife spawn. The time is
-   set to 10:00 with clear weather.
+   set to 10:00 with clear weather, or to the shot's [look](#looks).
 6. **Records** each shot with ffmpeg (`<area>.mp4` for a walkthrough, `<area>-<x>-<y>.mp4` or
    `<area>-<tag>.mp4` for a spot, with `-event` added for an event), then closes everything.
 
@@ -123,6 +125,9 @@ Options (`./director.py film --help` for all of them):
 | `--spot AREA@X,Y` / `--spot AREA@TAG` | circle a point, or an object by tag (repeatable); add `/FACING` (degrees, 0 east, 90 north) to start the circle looking that way |
 | `--event AREA@X,Y=CODE` / `--event AREA@TAG=CODE` | a spot where CODE runs 3 seconds in (repeatable) |
 | `--stills N` | spots as N stills and a contact sheet instead of a video, drawn on the CPU in a virtual display (spots only) |
+| `--look LOOK,LOOK` | film every shot once in each of these [looks](#looks) (`none`: as without one) |
+| `--looks FILE` | another looks file instead of [looks.json](looks.json) |
+| `--sky LOOK=ROW` | film LOOK under `skyboxes.2da` row ROW instead of its own sky (repeatable) |
 | `--seconds N` | film each shot for at most N seconds (default 45) |
 | `--desktop` | film on your desktop even when VirtualGL is there |
 | `--vglrun PATH` | VirtualGL's `vglrun`, if it isn't found by itself ([Filming off screen](#filming-off-screen)) |
@@ -136,6 +141,66 @@ Options (`./director.py film --help` for all of them):
 | `--image IMAGE` | the server image, to match your client's version |
 | `--keep-server` | leave the server running afterwards (`docker logs nwn-director`) |
 | `--script-log` | log every script the server runs, to find what a module's scripts are doing |
+
+## Looks
+
+A look is a time of day, a sky, light and weather for a shot, set before the camera rolls and undone after the cut.
+[looks.json](looks.json) has four:
+
+| Look | Time | Sky (`skyboxes.2da`) | What else |
+|---|---|---|---|
+| `golden-hour` | dusk | 1, Grass_Clear (its dusk) | warm light, orange fog fading in over 8 s, every tile's two main lights pale orange |
+| `misty-dawn` | dawn | 3, Desert_Clear (its dawn) | pale grey fog, thick; stock mist placeables over water and fog in hollows near the shot |
+| `moonlit` | night | 3, Desert_Clear (its starry night) | dark blue light and fog, tile lights pale dark blue, a blue light 16 m over the spot (on the walker for a walk) as the moon |
+| `storm` | day | 2, Grass_Storm | rain, wind, grey fog that darkens over the take, lightning behind the camera every 4 to 9 seconds |
+
+```sh
+# A spot as stills in each look, and once as it is.
+./director.py film ~/modules/mymodule.mod --spot lakeshore@120,87 --stills 4 \
+    --look none,golden-hour,misty-dawn,moonlit,storm \
+    --character ~/.local/share/Neverwinter\ Nights/localvault/somechar.bic
+```
+
+How it works:
+
+- **A copy of the area per look.** No script can set an area's sun and moon colours, so the module's copy gets one
+  more copy of each area for each look it is filmed in (`dir_lk0`, `dir_lk1`, ...), with the look's light in both the
+  sun's and the moon's colours, cycling day and night. The time then picks the sky's dawn, day, dusk or night
+  picture, and the light stays the look's. The shot is filmed there; its name ends in the look (`<name>-storm`).
+- **Script calls** (all in the base game's `nwscript.nss`): `SetTime`, `SetSkyBox`, `SetFogColor`, `SetFogAmount`,
+  `SetTileMainLightColor` with `RecomputeStaticLighting`, `SetWeather`, `SetAreaWind`, and effects. Dawn and dusk are
+  the module's own hours.
+- **Temporary placeables** (mist, fog, the moon's light) are made as the walker is: the stock invisible object
+  (`plc_invisobj`) with a `placeables.2da` appearance, tagged `DIR_TMP`. They, the lightning and the weather go after
+  the cut.
+- **The time is set first**, before anything of the shot is scheduled: `SetTime` runs every delayed command at once.
+  It only goes forward, so an earlier hour is the next day's.
+- **Fog amount has no fade** in the game: a look sets it before the roll, and fades only the colour.
+
+The looks are data: a look in another file (`--looks FILE`) has these keys, all but `light` optional. Constants are
+numbers or their names in `nwscript.nss`.
+
+| Key | |
+|---|---|
+| `name` | what it is called |
+| `light` | the area copy's light: `ambient`, `diffuse` and `fog` colours (`#rrggbb`), `fogAmount`, `shadows`, `fogClip` (the view distance) |
+| `time` | `dawn`, `day`, `dusk`, `night`, or an hour |
+| `sky` | a `skyboxes.2da` row (`--sky` changes it for a run) |
+| `fog` | `color`, `amount` and `fade` (seconds) set by script before the roll |
+| `takeFog` | a fog colour to fade to over the take |
+| `tileLight` | a `lightcolor.2da` row for every tile's two main lights |
+| `weather` | `WEATHER_RAIN`, `WEATHER_SNOW` or `WEATHER_CLEAR` (the default) |
+| `wind` | `direction` `[x, y, z]`, `magnitude`, `yaw`, `pitch` (`SetAreaWind`) |
+| `mist` | `placeables.2da` rows to place over `water` and in `hollow`s, at most `max`, within `range` m of the spot (a walk: its start); one `hollow` at the spot if there are neither |
+| `moon` | a light effect (`VFX_DUR_LIGHT_*`), `height` m over the spot |
+| `lightning` | an `effect`, `every` `[min, max]` seconds, `distance` `[min, max]` m behind the camera |
+
+**Skies for now:** the stock rows that come nearest. A module with skies of its own (more rows in its
+`skyboxes.2da`) names them with `--sky LOOK=ROW` or in its own looks file.
+
+**Limits:** the looks are made for outdoor areas; in one underground there is no sky to see. Lightning strikes behind
+the camera, so its flash and thunder are seen and heard but not its bolt. Mist goes where the area's walkmesh says
+water or a hollow is, so water that isn't walkmesh (a picture of water on the ground) gets none.
 
 ## GUI shots
 
@@ -295,8 +360,8 @@ The cameraman logs in with your CD key, so the server checks it online like any 
 python3 -m unittest discover -v tests
 ```
 
-They check the plain parts (routes, area lookup, shot options, settings, the contact sheet, how
-stills are timed; for GUI shots the shot list, positions at each UI scale, waiting for a window to settle, the
+They check the plain parts (routes, area lookup, shot options, looks and their area copies, settings, the
+contact sheet, how stills are timed; for GUI shots the shot list, positions at each UI scale, waiting for a window to settle, the
 generated module, staging and input steps, and comparing two runs) on made-up data, with no game, server or
 client; the picture tests need ffmpeg. They run on every push and pull request. Filming itself is tested by hand on a real module.
 

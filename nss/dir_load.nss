@@ -22,7 +22,9 @@
 //                            "encounters": [[x, y], ...], and for a walk "stops": [[x, y], ...],
 //                            for a spot "at": [x, y] or "tag": "TAG", maybe "facing": degrees
 //                            (0 east, 90 north) and maybe "event": the script to run (the
-//                            module's, or dir_ev<n>: the event's code, compiled by director.py)}
+//                            module's, or dir_ev<n>: the event's code, compiled by director.py),
+//                            maybe "look": a look from looks.json as director.py resolves it
+//                            (its area is then director.py's copy with the look's light)}
 //   DIRECTOR_SECONDS float   seconds to film each shot at most
 //   DIRECTOR_RUN     int     TRUE: the walker runs
 //   DIRECTOR_STILLS  int     stills instead of video: spots turn through this many angles, each
@@ -37,6 +39,7 @@
 //   "DIRECTOR: CUT"          stop recording
 //   "DIRECTOR: END"          all shots done
 //   "DIRECTOR: event ..."    an event ran
+//   "DIRECTOR: look ..."     a look was set
 
 const int DIRECTOR_WALKER_APPEARANCE = 298; // appearance.2da Invisible_Human_Male
 const float DIRECTOR_TICK = 1.0;            // seconds between camera updates
@@ -155,24 +158,12 @@ location Dir_Start(object oArea, json jShot)
     return Dir_Point(oArea, JsonObjectGet(jShot, "at"));
 }
 
-// Camera moves run on the cameraman: SetCameraFacing acts on the calling player's camera.
+// Camera moves run on the cameraman: SetCameraFacing acts on the calling player's camera. The direction is kept
+// for a look's lightning, which strikes behind the camera.
 void Dir_Cam(object oCam, float fDir, float fDist, float fPitch, int nTransition)
 {
+    SetLocalFloat(GetModule(), "DIRECTOR_CAM_DIR", fDir);
     AssignCommand(oCam, SetCameraFacing(fDir, fDist, fPitch, nTransition));
-}
-
-// Fixed time of day, clear weather, and every encounter on.
-void Dir_Set(object oArea)
-{
-    SetTime(10, 0, 0, 0);
-    SetWeather(oArea, WEATHER_CLEAR);
-    object o = GetFirstObjectInArea(oArea);
-    while (GetIsObjectValid(o))
-    {
-        if (GetObjectType(o) == OBJECT_TYPE_ENCOUNTER)
-            SetEncounterActive(TRUE, o);
-        o = GetNextObjectInArea(oArea);
-    }
 }
 
 // A GFF field of jGff (TemplateToJson / ObjectToJson form) set to a new value of the same type.
@@ -182,6 +173,221 @@ json Dir_GffSet(json jGff, string sField, json jValue)
     if (JsonGetType(jField) != JSON_TYPE_OBJECT)
         return jGff;
     return JsonObjectSet(jGff, sField, JsonObjectSet(jField, "value", jValue));
+}
+
+// ---------------------------------------------------------------- looks
+
+// jLook's sKey as an int, or nDefault if it has none.
+int Dir_LookInt(json jLook, string sKey, int nDefault)
+{
+    json j = JsonObjectGet(jLook, sKey);
+    return JsonGetType(j) == JSON_TYPE_INTEGER ? JsonGetInt(j) : nDefault;
+}
+
+float Dir_LookFloat(json jLook, string sKey)
+{
+    return JsonGetFloat(JsonObjectGet(jLook, sKey));
+}
+
+// A temporary placeable for a look (mist, fog, a light), made as Dir_Walker makes the walker: the stock invisible
+// object, with a placeables.2da appearance (-1: stays invisible). Tagged DIR_TMP, destroyed after the cut.
+object Dir_Temp(location lLoc, int nAppearance)
+{
+    json j = TemplateToJson("plc_invisobj", RESTYPE_UTP);
+    if (nAppearance >= 0)
+        j = Dir_GffSet(j, "Appearance", JsonInt(nAppearance));
+    j = Dir_GffSet(j, "Tag", JsonString("DIR_TMP"));
+    j = Dir_GffSet(j, "Plot", JsonInt(1));
+    object o = JsonToObject(j, lLoc);
+    SetName(o, " ");
+    SetObjectUiDiscoveryMask(o, OBJECT_UI_DISCOVERY_NONE);
+    SetObjectVisibleDistance(o, 100.0);
+    return o;
+}
+
+// (fX, fY) is in a hollow: the ground there is lower than all around it, 5, 10 and 15 m out.
+int Dir_Hollow(object oArea, float fX, float fY, float fZ)
+{
+    float fR, fA;
+    for (fR = 5.0; fR <= 15.0; fR += 5.0)
+        for (fA = 0.0; fA < 360.0; fA += 45.0)
+        {
+            location l = Location(oArea, Vector(fX + fR * cos(fA), fY + fR * sin(fA), 0.0), 0.0);
+            if (GetSurfaceMaterial(l) <= 0 || GetGroundHeight(l) < fZ + 0.3)
+                return FALSE;
+        }
+    return TRUE;
+}
+
+// A look's mist near lAt: a "water" placeable over water (surfacemat.2da IsWater) and a "hollow" one in hollows, at
+// most "max", none within 8 m of another. If the place has neither, one "hollow" at lAt, so a misty look is misty.
+void Dir_Mist(object oArea, json jMist, location lAt)
+{
+    int nWater = Dir_LookInt(jMist, "water", -1);
+    int nHollow = Dir_LookInt(jMist, "hollow", -1);
+    int nMax = Dir_LookInt(jMist, "max", 12);
+    float fRange = Dir_LookFloat(jMist, "range");
+    float fWidth = 10.0 * GetAreaSize(AREA_WIDTH, oArea) - 2.5;
+    float fHeight = 10.0 * GetAreaSize(AREA_HEIGHT, oArea) - 2.5;
+    vector vAt = GetPositionFromLocation(lAt);
+    float fX0 = vAt.x - fRange < 2.5 ? 2.5 : vAt.x - fRange;
+    float fY0 = vAt.y - fRange < 2.5 ? 2.5 : vAt.y - fRange;
+    json jTaken = JsonArray();
+    int nPlaced = 0;
+    float fX, fY;
+    for (fY = fY0; fY <= fHeight && fY <= vAt.y + fRange && nPlaced < nMax; fY += 5.0)
+        for (fX = fX0; fX <= fWidth && fX <= vAt.x + fRange && nPlaced < nMax; fX += 5.0)
+        {
+            location l = Location(oArea, Vector(fX, fY, 0.0), 0.0);
+            int nMaterial = GetSurfaceMaterial(l);
+            if (nMaterial <= 0)
+                continue;
+            float fZ = GetGroundHeight(l);
+            int nRow = -1;
+            if (Get2DAString("surfacemat", "IsWater", nMaterial) == "1")
+                nRow = nWater;
+            else if (nHollow >= 0 && Dir_Hollow(oArea, fX, fY, fZ))
+                nRow = nHollow;
+            if (nRow < 0)
+                continue;
+            int i, bNear = FALSE;
+            for (i = 0; i < JsonGetLength(jTaken) && !bNear; i += 2)
+                bNear = fabs(JsonGetFloat(JsonArrayGet(jTaken, i)) - fX) < 8.0
+                    && fabs(JsonGetFloat(JsonArrayGet(jTaken, i + 1)) - fY) < 8.0;
+            if (bNear)
+                continue;
+            Dir_Temp(Location(oArea, Vector(fX, fY, fZ), 0.0), nRow);
+            jTaken = JsonArrayInsert(JsonArrayInsert(jTaken, JsonFloat(fX)), JsonFloat(fY));
+            nPlaced++;
+        }
+    if (nPlaced == 0 && nHollow >= 0)
+    {
+        Dir_Temp(lAt, nHollow);
+        nPlaced = 1;
+    }
+    Dir_Log("look mist: " + IntToString(nPlaced) + " placeables");
+}
+
+// Every tile's two main lights in one lightcolor.2da colour.
+void Dir_TileLights(object oArea, int nColor)
+{
+    int nWidth = GetAreaSize(AREA_WIDTH, oArea);
+    int nHeight = GetAreaSize(AREA_HEIGHT, oArea);
+    int x, y;
+    for (y = 0; y < nHeight; y++)
+        for (x = 0; x < nWidth; x++)
+            SetTileMainLightColor(Location(oArea, Vector(10.0 * x + 5.0, 10.0 * y + 5.0, 0.0), 0.0), nColor, nColor);
+    RecomputeStaticLighting(oArea);
+}
+
+// A shot's look before the camera rolls (the time and weather are Dir_Set's): sky, fog, tile lights, wind, mist and
+// the moon. The sun's and moon's own colours can't be set by script: the area is director.py's copy with them.
+void Dir_Look(object oArea, json jLook, location lAt, int bWalk)
+{
+    int nSky = Dir_LookInt(jLook, "sky", -1);
+    if (nSky >= 0)
+        SetSkyBox(nSky, oArea);
+    json jFog = JsonObjectGet(jLook, "fog");
+    if (JsonGetType(jFog) == JSON_TYPE_OBJECT)
+    {
+        // The amount has no fade: it is set now, and only the colour fades.
+        SetFogColor(FOG_TYPE_ALL, Dir_LookInt(jFog, "color", 0), oArea, Dir_LookFloat(jFog, "fade"));
+        int nAmount = Dir_LookInt(jFog, "amount", -1);
+        if (nAmount >= 0)
+            SetFogAmount(FOG_TYPE_ALL, nAmount, oArea);
+    }
+    int nTileLight = Dir_LookInt(jLook, "tileLight", -1);
+    if (nTileLight >= 0)
+        Dir_TileLights(oArea, nTileLight);
+    json jWind = JsonObjectGet(jLook, "wind");
+    if (JsonGetType(jWind) == JSON_TYPE_OBJECT)
+        SetAreaWind(oArea, Vector(Dir_LookFloat(jWind, "x"), Dir_LookFloat(jWind, "y"), Dir_LookFloat(jWind, "z")),
+            Dir_LookFloat(jWind, "magnitude"), Dir_LookFloat(jWind, "yaw"), Dir_LookFloat(jWind, "pitch"));
+    json jMist = JsonObjectGet(jLook, "mist");
+    if (JsonGetType(jMist) == JSON_TYPE_OBJECT)
+        Dir_Mist(oArea, jMist, lAt);
+    // The moon: a light high over a spot (a walk's is on the walker, Dir_LookWalker).
+    json jMoon = JsonObjectGet(jLook, "moon");
+    if (JsonGetType(jMoon) == JSON_TYPE_OBJECT && !bWalk)
+    {
+        vector v = GetPositionFromLocation(lAt);
+        object oMoon = Dir_Temp(Location(oArea, Vector(v.x, v.y, v.z + Dir_LookFloat(jMoon, "height")), 0.0), -1);
+        ApplyEffectToObject(DURATION_TYPE_PERMANENT, EffectVisualEffect(Dir_LookInt(jMoon, "light", 0)), oMoon);
+    }
+    Dir_Log("look " + JsonGetString(JsonObjectGet(jLook, "id")) + " set");
+}
+
+// A walk's moon goes with the walker.
+void Dir_LookWalker(object oWalker, json jLook)
+{
+    json jMoon = JsonObjectGet(jLook, "moon");
+    if (JsonGetType(jMoon) == JSON_TYPE_OBJECT)
+        ApplyEffectToObject(DURATION_TYPE_PERMANENT, EffectVisualEffect(Dir_LookInt(jMoon, "light", 0)), oWalker);
+}
+
+// A look's lightning while shot nShot rolls: a strike behind the camera, out of shot (its flash and thunder are
+// what's seen and heard), every few seconds.
+void Dir_Lightning(object oWalker, int nShot, json jLightning)
+{
+    if (GetLocalInt(GetModule(), "DIRECTOR_ROLLING") != nShot + 1 || !GetIsObjectValid(oWalker))
+        return;
+    float fDir = GetLocalFloat(GetModule(), "DIRECTOR_CAM_DIR") + 180.0 + IntToFloat(Random(121) - 60);
+    float fDistMin = Dir_LookFloat(jLightning, "distMin");
+    float fDist = fDistMin + (Dir_LookFloat(jLightning, "distMax") - fDistMin) * IntToFloat(Random(101)) / 100.0;
+    vector v = GetPosition(oWalker);
+    location l = Location(GetArea(oWalker), Vector(v.x + fDist * cos(fDir), v.y + fDist * sin(fDir), v.z), 0.0);
+    ApplyEffectAtLocation(DURATION_TYPE_INSTANT, EffectVisualEffect(Dir_LookInt(jLightning, "effect", 0)), l);
+    float fEveryMin = Dir_LookFloat(jLightning, "everyMin");
+    float fNext = fEveryMin + (Dir_LookFloat(jLightning, "everyMax") - fEveryMin) * IntToFloat(Random(101)) / 100.0;
+    DelayCommand(fNext, Dir_Lightning(oWalker, nShot, jLightning));
+}
+
+// As the camera rolls: a look's fog colour fades over the take, and its lightning starts.
+void Dir_LookRoll(object oWalker, int nShot, json jLook)
+{
+    SetLocalInt(GetModule(), "DIRECTOR_ROLLING", nShot + 1);
+    if (JsonGetType(jLook) != JSON_TYPE_OBJECT)
+        return;
+    int nTakeFog = Dir_LookInt(jLook, "takeFog", -1);
+    if (nTakeFog >= 0)
+        SetFogColor(FOG_TYPE_ALL, nTakeFog, GetArea(oWalker), GetLocalFloat(GetModule(), "DIRECTOR_SECONDS"));
+    json jLightning = JsonObjectGet(jLook, "lightning");
+    if (JsonGetType(jLightning) == JSON_TYPE_OBJECT)
+        DelayCommand(1.0, Dir_Lightning(oWalker, nShot, jLightning));
+}
+
+// After the cut: the look's temporary placeables go, its lightning stops, and the area's weather is its own again.
+// The rest (sky, fog, tile lights, wind) stays in the copy, which only shots in the same look use, and they set it.
+void Dir_Unlook(object oArea)
+{
+    DeleteLocalInt(GetModule(), "DIRECTOR_ROLLING");
+    int n = 0;
+    object o = GetObjectByTag("DIR_TMP", n);
+    while (GetIsObjectValid(o))
+    {
+        if (GetArea(o) == oArea)
+            DestroyObject(o);
+        o = GetObjectByTag("DIR_TMP", ++n);
+    }
+    SetWeather(oArea, WEATHER_USE_AREA_SETTINGS);
+}
+
+// The shot's time (10:00, or its look's) and weather (clear, or its look's), every encounter on, then its look.
+// SetTime comes first, before anything of the shot is scheduled: it runs every pending DelayCommand at once.
+void Dir_Set(object oArea, json jShot, location lAt)
+{
+    json jLook = JsonObjectGet(jShot, "look");
+    SetTime(Dir_LookInt(jLook, "hour", 10), 0, 0, 0);
+    SetWeather(oArea, Dir_LookInt(jLook, "weather", WEATHER_CLEAR));
+    object o = GetFirstObjectInArea(oArea);
+    while (GetIsObjectValid(o))
+    {
+        if (GetObjectType(o) == OBJECT_TYPE_ENCOUNTER)
+            SetEncounterActive(TRUE, o);
+        o = GetNextObjectInArea(oArea);
+    }
+    if (JsonGetType(jLook) == JSON_TYPE_OBJECT)
+        Dir_Look(oArea, jLook, lAt, Dir_ShotString(jShot, "kind") == "walk");
 }
 
 // The invisible walker the camera follows. Made from the stock commoner blueprint with every
@@ -209,7 +415,9 @@ object Dir_Walker(location lLoc)
     SetPlotFlag(oWalker, TRUE);
     SetObjectUiDiscoveryMask(oWalker, OBJECT_UI_DISCOVERY_NONE);
     SetObjectVisibleDistance(oWalker, 100.0);
-    effect e = SupernaturalEffect(EffectLinkEffects(EffectSanctuary(255), EffectCutsceneGhost()));
+    // Cutscene invisibility too: in an area that cycles day and night, the invisible model still casts a shadow.
+    effect e = SupernaturalEffect(EffectLinkEffects(EffectSanctuary(255), EffectLinkEffects(EffectCutsceneGhost(),
+        EffectVisualEffect(VFX_DUR_CUTSCENE_INVISIBILITY))));
     ApplyEffectToObject(DURATION_TYPE_PERMANENT, e, oWalker);
     return oWalker;
 }
@@ -255,6 +463,7 @@ void Dir_Cut(object oCam, object oWalker, int nShot)
 {
     Dir_Log("CUT");
     AttachCamera(oCam, OBJECT_INVALID);
+    Dir_Unlook(GetArea(oWalker));
     DestroyObject(oWalker, 1.0);
     DelayCommand(2.0, Dir_DoShot(oCam, nShot + 1));
 }
@@ -342,6 +551,7 @@ void Dir_Still(object oCam, object oWalker, int nShot, int nAngle)
 void Dir_Action(object oCam, object oWalker, int nShot, int bWalk, string sName)
 {
     Dir_Log("ROLL " + sName);
+    Dir_LookRoll(oWalker, nShot, JsonObjectGet(Dir_Shot(nShot), "look"));
     if (!bWalk && GetLocalInt(GetModule(), "DIRECTOR_STILLS") > 0)
         Dir_Still(oCam, oWalker, nShot, 0);
     else
@@ -422,8 +632,9 @@ void Dir_DoShot(object oCam, int nShot)
         Dir_DoShot(oCam, nShot + 1);
         return;
     }
-    Dir_Set(oArea);
+    Dir_Set(oArea, jShot, lStart);
     object oWalker = Dir_Walker(lStart);
+    Dir_LookWalker(oWalker, JsonObjectGet(jShot, "look"));
 
     // The cameraman goes too; changing area detaches the camera, so it is attached once the area
     // has loaded. Meanwhile it steps into every encounter so they spawn (a PC entering sets one
