@@ -4,6 +4,12 @@ Versions follow [Semantic Versioning](https://semver.org/). Before 1.0, a minor 
 
 ## Unreleased
 
+- **`film`: films off screen on the GPU.** With VirtualGL there (installed, or its `.deb` unpacked under
+  `~/.local/opt/virtualgl`; `--vglrun` or `$NWN_DIRECTOR_VGLRUN` to point at it), the client draws on the GPU in a
+  virtual display of its own, with the film settings, and its sound goes into a sink of nwn-director's own: your
+  screen, desktop and speakers are left alone, and the desktop may be locked. Without VirtualGL, or with `--desktop`,
+  it films on the desktop as before.
+
 - **`film`: clips keep real time.** On a busy machine the recorder missed frames and the clip came out shorter than
   the shot, playing fast (an 18 s clip of a 20 s circle), so clips of the same shot length fell out of step. A missed
   frame is now shown twice instead.

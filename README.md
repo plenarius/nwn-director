@@ -33,7 +33,9 @@ of by playing. See [GUI shots](#gui-shots).
    placed creature and every encounter spawn point, nearest first, starting from an exit.
 3. **Runs the copy on a plain server** in Docker (no NWNX, no database), on `127.0.0.1` only.
 4. **Starts your game client** from its own settings folder (made from yours, so your settings
-   are never touched) and logs in with the character you give it.
+   are never touched) and logs in with the character you give it. With VirtualGL installed, the
+   client runs off screen, drawing on the GPU in a virtual display of its own, and your desktop is
+   left alone ([Filming off screen](#filming-off-screen)); without it, on your desktop.
 5. **Films each shot:** the camera follows an invisible walker (appearance 298,
    `Invisible_Human_Male`, base game). For a walkthrough it walks the route and the camera
    follows from behind at eye level; for a spot it stands at the place and the camera circles it
@@ -54,16 +56,18 @@ of by playing. See [GUI shots](#gui-shots).
 
 ## Requirements
 
-- **Linux** with an X11 desktop (recording uses `x11grab`), unlocked while it films. It keeps
-  the desktop from idling into the lock screen while it runs (GNOME). For `--stills`, no desktop:
-  **Xvfb** and Mesa's software renderer (llvmpipe) instead.
+- **Linux.** To film off screen on the GPU: **[VirtualGL](https://virtualgl.org)** 3.x and
+  **Xvfb** ([Filming off screen](#filming-off-screen)). Without VirtualGL (or with `--desktop`), an
+  X11 desktop (recording uses `x11grab`), unlocked while it films; it keeps the desktop from idling
+  into the lock screen while it runs (GNOME). For `--stills`, no desktop and no GPU: **Xvfb** and
+  Mesa's software renderer (llvmpipe).
 - **NWN:EE** (Steam, GOG or Beamdog), and the module's haks and TLK in your user folder (or
   give their folders).
 - **Docker**, to run the server (`ghcr.io/urothis/nwserver`, the community server image). The
   server checks your client's CD key online, so it needs internet access.
 - **[neverwinter.nim](https://github.com/niv/neverwinter.nim)** tools on your `PATH`:
   `nwn_erf`, `nwn_gff`, `nwn_script_comp`.
-- **ffmpeg**, **xdotool**, **xrandr**, and **pactl** (PipeWire or PulseAudio) for the sound.
+- **ffmpeg**, **xdotool**, **xrandr** (on the desktop), and **pactl** (PipeWire or PulseAudio) for the sound.
   With an NVIDIA card, ffmpeg's `h264_nvenc` encoder is used; otherwise `libx264`.
 - **Python 3.8+**.
 
@@ -120,6 +124,8 @@ Options (`./director.py film --help` for all of them):
 | `--event AREA@X,Y=CODE` / `--event AREA@TAG=CODE` | a spot where CODE runs 3 seconds in (repeatable) |
 | `--stills N` | spots as N stills and a contact sheet instead of a video, drawn on the CPU in a virtual display (spots only) |
 | `--seconds N` | film each shot for at most N seconds (default 45) |
+| `--desktop` | film on your desktop even when VirtualGL is there |
+| `--vglrun PATH` | VirtualGL's `vglrun`, if it isn't found by itself ([Filming off screen](#filming-off-screen)) |
 | `--run` | the walker runs instead of walking |
 | `--out DIR` | where the videos go |
 | `--game DIR` | your NWN:EE install, if it isn't found by itself |
@@ -221,6 +227,34 @@ reply), the rest bar at four fills, the death panel and the loading screen.
 
 **How long:** on a busy 4-core desktop, about 5 minutes per UI scale (79 pictures; 11 minutes for 1 and 1.5),
 most of it the client drawing on the CPU and each picture holding still for a second before it is saved.
+
+## Filming off screen
+
+When VirtualGL is there, `film` runs the client in a virtual display of its own (Xvfb, 1920x1080) under VirtualGL's
+`vglrun`, which sends its OpenGL to the GPU through EGL (no X server on the card) and copies each frame back into the
+virtual display, where ffmpeg records it. Nothing appears on your screen, and your desktop can be locked or in use.
+Unlike `--stills`, nothing is turned down: the film settings (high-quality shaders and lighting, grass, shadows,
+anti-aliasing) and your screen effects stay on, capped at 60 frames a second. The game's sound goes into a sink of
+nwn-director's own (a PipeWire or PulseAudio null sink, removed afterwards, your default output untouched), so it is
+recorded but never plays out of your speakers.
+
+VirtualGL needs no root. Either install its package, or unpack its `.deb` into your home, where nwn-director looks
+for it:
+
+```sh
+# The .deb from https://github.com/VirtualGL/virtualgl/releases (3.1.5 here).
+dpkg -x virtualgl_3.1.5_amd64.deb ~/.local/opt/virtualgl
+```
+
+It is found as `--vglrun PATH`, else `$NWN_DIRECTOR_VGLRUN`, else `vglrun` on your `PATH`, in `/opt/VirtualGL/bin`
+or in `~/.local/opt/virtualgl/opt/VirtualGL/bin`. From an unpacked package, nwn-director tells `vglrun` where its
+libraries are. It draws on the first GPU EGL finds; `VGL_DISPLAY=/dev/dri/card1` picks another. Your user needs
+access to the card (`/dev/dri/card*`): the logged-in desktop user has it, otherwise the `video` group.
+
+Checked on a GTX 1050 (2 GB, driver 580) with 4 CPU cores, at 1920x1080 with the film settings: a walk over a keep's
+torch-lit rooftop drew 40 to 60 frames a second, and a foggy swamp 30 to 45 while the server and another build shared
+the CPU. The GPU was about a quarter busy, so the CPU sets the pace. The clip is always 60 frames a second; a frame that
+came late is shown twice. Nothing appeared on the desktop.
 
 ## Your CD key
 
