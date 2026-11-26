@@ -249,8 +249,58 @@ class StillsDb(unittest.TestCase):
             shutil.rmtree(tmp)
 
 
+class VirtualGL(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.dir)
+
+    def make(self, *paths):
+        """Files under the temporary folder (executable); returns the first's path."""
+        for p in paths:
+            path = os.path.join(self.dir, p)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            open(path, 'w').close()
+            os.chmod(path, 0o755)
+        return os.path.join(self.dir, paths[0])
+
+    def test_unpacked_deb_gets_its_fakers_folder(self):
+        vglrun = self.make('opt/VirtualGL/bin/vglrun', 'usr/lib/libvglfaker.so')
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('VGL_DISPLAY', None)
+            self.assertEqual(d.vgl_command(vglrun),
+                             [vglrun, '-d', 'egl', '-ld', os.path.join(self.dir, 'usr', 'lib')])
+
+    def test_build_with_lib64_next_to_bin(self):
+        vglrun = self.make('vgl/bin/vglrun', 'vgl/lib64/libvglfaker.so')
+        self.assertEqual(d.vgl_command(vglrun)[3:], ['-ld', os.path.join(self.dir, 'vgl', 'lib64')])
+
+    def test_no_fakers_found_and_another_device(self):
+        vglrun = self.make('bin/vglrun')
+        with mock.patch.dict(os.environ, {'VGL_DISPLAY': '/dev/dri/card1'}):
+            self.assertEqual(d.vgl_command(vglrun), [vglrun, '-d', '/dev/dri/card1'])
+
+    def test_found_by_option_then_variable_then_known_places(self):
+        mine, theirs, known = (self.make(p) for p in ('a/vglrun', 'b/vglrun', 'c/vglrun'))
+        with mock.patch.dict(os.environ, {'NWN_DIRECTOR_VGLRUN': theirs, 'PATH': self.dir}), \
+                mock.patch.object(d, 'VGLRUN_PATHS', [known]):
+            self.assertEqual(d.find_vglrun(mine), mine)
+            self.assertEqual(d.find_vglrun(None), theirs)
+            del os.environ['NWN_DIRECTOR_VGLRUN']
+            self.assertEqual(d.find_vglrun(None), known)
+        with mock.patch.dict(os.environ, {'PATH': self.dir}), mock.patch.object(d, 'VGLRUN_PATHS', []):
+            os.environ.pop('NWN_DIRECTOR_VGLRUN', None)
+            self.assertIsNone(d.find_vglrun(None))
+
+    def test_one_given_that_isnt_there_dies(self):
+        with self.assertRaises(SystemExit) as e:
+            d.find_vglrun(os.path.join(self.dir, 'nothing'))
+        self.assertIn('no vglrun', str(e.exception))
+
+
 class ClientSettings(unittest.TestCase):
-    settings = {('graphics.grass', 'mode'): '0', ('graphics.fbo.ssao', 'enabled'): 'false',
+    settings ={('graphics.grass', 'mode'): '0', ('graphics.fbo.ssao', 'enabled'): 'false',
                 ('graphics.new', 'thing'): '"x"'}
 
     def setUp(self):

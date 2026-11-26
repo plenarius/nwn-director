@@ -13,7 +13,8 @@ a walkthrough of each area in --areas (<area>.mp4), a slow circle around each --
 few seconds in (<area>-<x>-<y>-event.mp4 or <area>-<tag>-event.mp4). An AREA is a resref or an
 area's tag (as bug reports give it). With --stills N, spots are N stills instead of a video
 (<name>-00.png ... and a contact sheet <name>.png), from a client drawing on the CPU in its own
-virtual display: no GPU, and your desktop is left alone.
+virtual display: no GPU, and your desktop is left alone. Videos are filmed off screen on the GPU when VirtualGL is
+installed (vglrun), else on your desktop.
 `areas` lists the module's areas (resref, tag, size, exits) to choose from.
 
 See README.md for requirements and how it works.
@@ -96,6 +97,15 @@ STILLS_SETTINGS = {
     ('graphics.framelimiter', 'enabled'): 'true',
     ('graphics.framelimiter.foreground', 'target-fps'): '10',
     ('graphics.framelimiter.background', 'target-fps'): '10',
+}
+
+# Films off screen (VirtualGL): the film settings, at most 60 frames a second, which is what is recorded. Xvfb has no
+# window manager, so the client may count itself in the background or not interactive (48 by default): 60 there too.
+OFFSCREEN_SETTINGS = {
+    ('graphics.framelimiter', 'enabled'): 'true',
+    ('graphics.framelimiter.foreground', 'target-fps'): '60',
+    ('graphics.framelimiter.background', 'target-fps'): '60',
+    ('graphics.framelimiter.non-interactive', 'target-fps'): '60',
 }
 
 # Only in a settings.tml made from nothing (no player's file: a server or CI runner where nobody has played). A
@@ -564,7 +574,7 @@ def prepare_client(args):
         src, dst = os.path.join(user, d), os.path.join(cdir, d)
         if os.path.exists(src) and not os.path.lexists(dst):
             os.symlink(src, dst)
-    settings = {**CLIENT_SETTINGS, **(STILLS_SETTINGS if args.stills else {})}
+    settings = {**CLIENT_SETTINGS, **(STILLS_SETTINGS if args.stills else OFFSCREEN_SETTINGS if args.vglrun else {})}
     client_settings(os.path.join(user, 'settings.tml'), os.path.join(cdir, 'settings.tml'), settings)
     vault = os.path.join(cdir, 'localvault')
     shutil.rmtree(vault, ignore_errors=True)
@@ -576,24 +586,84 @@ def prepare_client(args):
 def start_client(args, game, cdir, logfile):
     binary = os.path.join(game, 'bin', 'linux-x86', 'nwmain-linux')
     env = dict(os.environ)
+    cmd = [binary, '-userdirectory', cdir, '+connect', f'127.0.0.1:{args.port}']
     if args.stills:
         # Drawn on the CPU (Mesa's llvmpipe), with no sound device.
         env.update(LIBGL_ALWAYS_SOFTWARE='1', GALLIUM_DRIVER='llvmpipe', __GLX_VENDOR_LIBRARY_NAME='mesa',
                    SDL_AUDIODRIVER='dummy')
-    return subprocess.Popen([binary, '-userdirectory', cdir, '+connect', f'127.0.0.1:{args.port}'],
-                            cwd=os.path.dirname(binary), stdout=logfile, stderr=subprocess.STDOUT, env=env)
+    elif args.vglrun:
+        cmd = vgl_command(args.vglrun) + cmd
+        # The game's sound (OpenAL) into the director's own sink, or nowhere: never out of your speakers.
+        env.update({'ALSOFT_DRIVERS': 'pulse', 'PULSE_SINK': SINK} if args.sink else {'ALSOFT_DRIVERS': 'null'})
+    return subprocess.Popen(cmd, cwd=os.path.dirname(binary), stdout=logfile, stderr=subprocess.STDOUT, env=env)
+
+
+# VirtualGL's vglrun where its package puts it, or its .deb unpacked in your home (README: Filming off screen).
+VGLRUN_PATHS = ['/opt/VirtualGL/bin/vglrun', '~/.local/opt/virtualgl/opt/VirtualGL/bin/vglrun']
+
+
+def find_vglrun(arg):
+    """vglrun: --vglrun, else $NWN_DIRECTOR_VGLRUN, else on PATH or in VGLRUN_PATHS. Dies if the one given isn't
+    there; None if none is found."""
+    given = arg or os.environ.get('NWN_DIRECTOR_VGLRUN')
+    if given:
+        path = os.path.expanduser(given)
+        if not (os.path.isfile(path) and os.access(path, os.X_OK)):
+            die(f'no vglrun at {given}')
+        return path
+    for path in [shutil.which('vglrun')] + [os.path.expanduser(p) for p in VGLRUN_PATHS]:
+        if path and os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    return None
+
+
+def vgl_command(vglrun):
+    """vglrun drawing on the GPU through EGL (no X server on the card; $VGL_DISPLAY picks another device, such as
+    /dev/dri/card1). vglrun preloads its fakers by name: from a package unpacked outside the system's library folders
+    (a .deb's usr/lib, an .rpm's usr/lib64, or a build's lib64 next to bin), it is told where they are (-ld)."""
+    cmd = [vglrun, '-d', os.environ.get('VGL_DISPLAY', 'egl')]
+    bin_dir = os.path.dirname(os.path.realpath(vglrun))
+    root = os.path.dirname(os.path.dirname(os.path.dirname(bin_dir)))
+    for lib in [os.path.join(bin_dir, '..', d) for d in ('lib64', 'lib')] + \
+               [os.path.join(root, 'usr', d) for d in ('lib', 'lib64')]:
+        lib = os.path.normpath(lib)
+        if os.path.exists(os.path.join(lib, 'libvglfaker.so')):
+            return cmd + ([] if lib.startswith('/usr/') else ['-ld', lib])
+    return cmd
+
+
+# The director's own sound sink (off screen): the client plays into it and the recorder records its monitor.
+SINK = 'nwn-director'
+
+
+def start_sink():
+    """A null sink for the off-screen client's sound (PipeWire or PulseAudio), so it is recorded without playing out
+    of your speakers or mixing in other sound. Your default sink stays as it is. Returns the module to unload after,
+    or None (no pactl, or it failed): then the client has no sound."""
+    if not shutil.which('pactl'):
+        return None
+    done = subprocess.run(['pactl', 'load-module', 'module-null-sink', f'sink_name={SINK}',
+                           f'sink_properties=device.description={SINK}'], capture_output=True, text=True)
+    return done.stdout.strip() if done.returncode == 0 and done.stdout.strip() else None
+
+
+def stop_sink(module):
+    if module:
+        subprocess.run(['pactl', 'unload-module', module], capture_output=True)
 
 
 # The stills' screen (STILLS_SETTINGS): small enough to draw on a CPU, big enough to see what a bug report is about.
 STILLS_SIZE = '960x540'
+# Films off screen: 1080p, as films of the desktop usually are.
+FILM_SIZE = '1920x1080'
 
 
-def start_display():
-    """A virtual X display of its own for the client (stills): sets DISPLAY, returns the server."""
+def start_display(size):
+    """A virtual X display of its own for the client (stills, films off screen): sets DISPLAY, returns the server."""
     n = 99
     while os.path.exists(f'/tmp/.X11-unix/X{n}') or os.path.exists(f'/tmp/.X{n}-lock'):
         n += 1
-    xvfb = subprocess.Popen(['Xvfb', f':{n}', '-screen', '0', STILLS_SIZE + 'x24', '-nolisten', 'tcp'],
+    xvfb = subprocess.Popen(['Xvfb', f':{n}', '-screen', '0', size + 'x24', '-nolisten', 'tcp'],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(50):
         if os.path.exists(f'/tmp/.X11-unix/X{n}'):
@@ -607,10 +677,10 @@ def start_display():
 THUMB = ['-frames:v', '1', '-vf', 'scale=64:36:flags=area', '-f', 'rawvideo', '-pix_fmt', 'gray', '-']
 
 
-def grab(path=None):
+def grab(path=None, size=STILLS_SIZE):
     """The screen as a 64x36 grey thumbnail (bytes) to compare frames by; with path, also saved there, from the same
     frame (one capture: on a CPU-drawn client every ffmpeg started takes from the game)."""
-    cmd = ['ffmpeg', '-v', 'error', '-y', '-f', 'x11grab', '-video_size', STILLS_SIZE, '-i', os.environ['DISPLAY']]
+    cmd = ['ffmpeg', '-v', 'error', '-y', '-f', 'x11grab', '-video_size', size, '-i', os.environ['DISPLAY']]
     if path:
         cmd += ['-map', '0:v', '-frames:v', '1', path, '-map', '0:v']
     return subprocess.run(cmd + THUMB, capture_output=True).stdout
@@ -723,10 +793,11 @@ def encoder():
     return ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20']
 
 
-def record(path, size):
-    """Record the screen, and the game's sound from the default output's monitor, to path."""
-    monitor = shutil.which('pactl') and subprocess.run(['pactl', 'get-default-sink'], capture_output=True,
-                                                       text=True).stdout.strip()
+def record(path, size, sink=None):
+    """Record the screen, and the game's sound from the monitor of sink (off screen: the director's own) or of the
+    default output, to path."""
+    monitor = sink or shutil.which('pactl') and subprocess.run(['pactl', 'get-default-sink'], capture_output=True,
+                                                               text=True).stdout.strip()
     # Wall-clock timestamps and a constant 60 fps out: on a busy machine x11grab misses frames, and without these
     # the clip came out shorter than the shot and played fast (an 18 s clip of a 20 s circle); now a missed frame
     # is shown twice and the clip keeps real time, so clips of the same shot length stay in step.
@@ -793,7 +864,7 @@ def log_in(slog, size, screenshot=None, vault_key=None, raise_window=True, resta
     key with Beamdog's master server ("unable to verify your password") and refuses it, and a second try gets in."""
     def fail(why):
         if screenshot:
-            grab(screenshot)
+            grab(screenshot, size)
         die(why + (f'; the screen: {os.path.basename(screenshot)}' if screenshot else ''))
 
     joined = slog.wait_for(r'Joined as Player', JOIN_WAIT, fatal=False)
@@ -865,8 +936,9 @@ def take_stills(slog, out, db, client=None):
     return sheets
 
 
-def film_video(slog, out, size, seconds):
-    """Record every shot from its ROLL to its CUT as out/<shot>.mp4."""
+def film_video(slog, out, size, seconds, desktop=True, sink=None):
+    """Record every shot from its ROLL to its CUT as out/<shot>.mp4. On the desktop, the game's window is brought to
+    the front first."""
     recorder = None
     try:
         # The longest wait between markers is a shot (--seconds) plus loading the next area.
@@ -874,8 +946,9 @@ def film_video(slog, out, size, seconds):
             if what == 'ROLL':
                 name = re.sub(r'[^A-Za-z0-9_-]', '', rest)
                 log(f'recording {name}')
-                raise_client()
-                recorder = record(os.path.join(out, name + '.mp4'), size)
+                if desktop:
+                    raise_client()
+                recorder = record(os.path.join(out, name + '.mp4'), size, sink)
             elif what == 'CUT' and recorder:
                 recorder.send_signal(signal.SIGINT)
                 recorder.wait()
@@ -896,14 +969,17 @@ def remove_server_files(image, work):
 
 def check_tools(args):
     tools = ['docker', 'nwn_erf', 'nwn_gff', 'nwn_script_comp', 'ffmpeg', 'xdotool']
-    tools += ['Xvfb'] if args.stills else ['xrandr']
+    tools += ['Xvfb'] if args.stills or args.vglrun else ['xrandr']
     for tool in tools:
         if not shutil.which(tool):
             die(f'{tool} not found (README.md lists what is needed)')
 
 
 def cmd_film(args):
-    if not args.stills:
+    # Films off screen on the GPU when VirtualGL is there (README: Filming off screen), else on the desktop.
+    args.vglrun = None if args.stills or args.desktop else find_vglrun(args.vglrun)
+    args.sink = None
+    if not args.stills and not args.vglrun:
         # A locked or sleeping screen is what would be recorded: keep the desktop awake while filming.
         if not os.environ.get('NWN_DIRECTOR_INHIBITED') and shutil.which('gnome-session-inhibit'):
             os.environ['NWN_DIRECTOR_INHIBITED'] = '1'
@@ -925,7 +1001,7 @@ def cmd_film(args):
     # none where they look.
     user = os.path.expanduser(args.user_dir)
     os.environ.setdefault('NWN_HOME', user if os.path.isdir(user) else work)
-    clients, slog, xvfb = [], None, None
+    clients, slog, xvfb, sink_module = [], None, None, None
     try:
         home = prepare(args, game, work)
         log('starting the server')
@@ -934,8 +1010,17 @@ def cmd_film(args):
         slog.wait_for(r'DIRECTOR: module loaded', 600)
 
         if args.stills:
-            xvfb = start_display()
-        log('starting the game client' + (' (drawing on the CPU, in a virtual display)' if args.stills else ''))
+            xvfb = start_display(STILLS_SIZE)
+            how = ' (drawing on the CPU, in a virtual display)'
+        elif args.vglrun:
+            xvfb = start_display(FILM_SIZE)
+            sink_module = start_sink()
+            args.sink = SINK if sink_module else None
+            how = ' (drawing on the GPU through VirtualGL, in a virtual display' + \
+                  ('' if args.sink else '; no sound: no sink of its own') + ')'
+        else:
+            how = ' (on your desktop: VirtualGL not found)'
+        log('starting the game client' + how)
         cdir = prepare_client(args)
 
         def launch():
@@ -945,13 +1030,14 @@ def cmd_film(args):
             clients.append(start_client(args, game, cdir, open(os.path.join(out, 'client.log'), 'a')))
 
         launch()
-        size = STILLS_SIZE if args.stills else screen_size()
-        log_in(slog, size, screenshot=os.path.join(out, 'no-cameraman.png') if args.stills else None,
-               raise_window=not args.stills, restart=launch)
+        size = STILLS_SIZE if args.stills else FILM_SIZE if args.vglrun else screen_size()
+        offscreen = bool(args.stills or args.vglrun)
+        log_in(slog, size, screenshot=os.path.join(out, 'no-cameraman.png') if offscreen else None,
+               raise_window=not offscreen, restart=launch)
         if args.stills:
             take_stills(slog, out, os.path.join(home, 'database', 'director.sqlite3'), clients[-1])
         else:
-            film_video(slog, out, size, args.seconds)
+            film_video(slog, out, size, args.seconds, desktop=not offscreen, sink=args.sink)
     finally:
         for client in clients:
             # SIGKILL: on a normal quit the client crashes tearing down the cameraman's cutscene
@@ -961,6 +1047,7 @@ def cmd_film(args):
             slog.close()
         if xvfb:
             xvfb.kill()
+        stop_sink(sink_module)
         if not args.keep_server:
             subprocess.run(['docker', 'rm', '-f', CONTAINER], capture_output=True)
             remove_server_files(args.image, work)
@@ -1014,6 +1101,11 @@ def main():
     f.add_argument('--stills', type=int, default=0, metavar='N',
                    help='spots as N stills (one every 360/N degrees) and a contact sheet instead of a video, '
                         'drawn on the CPU in a virtual display: no GPU, and your desktop is left alone')
+    f.add_argument('--desktop', action='store_true',
+                   help='film on your desktop even when VirtualGL is there (videos only)')
+    f.add_argument('--vglrun', metavar='PATH',
+                   help="VirtualGL's vglrun, to film off screen on the GPU ($NWN_DIRECTOR_VGLRUN; else found on "
+                        'PATH, in /opt/VirtualGL/bin or ~/.local/opt/virtualgl/opt/VirtualGL/bin)')
     f.add_argument('--seconds', type=float, default=45, help='seconds to film each shot at most (45)')
     f.add_argument('--run', action='store_true', help='the walker runs instead of walking')
     f.add_argument('--out', help='folder for the videos (out/<date-time>)')
