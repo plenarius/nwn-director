@@ -2,6 +2,7 @@
 
     python3 -m unittest discover tests
 """
+import json
 import os
 import queue
 import shutil
@@ -196,6 +197,18 @@ class WaitForAngle(unittest.TestCase):
     def test_later_angle_never_turned(self):
         last = self.view(90)
         self.assertEqual(self.run_frames([last] * 5, previous=last)[0], False)
+
+    def test_moving_scene_holds_to_the_looser_limit_later(self):
+        # Mist: 3 or 6 from frame to frame, after the camera has turned from 90 to 130.
+        last = self.view(90)
+        mist = [self.view(130 + 3 * (i % 3)) for i in range(200)]
+        ok, polls = self.run_frames([last] * 4 + mist, previous=last, limit=60)
+        self.assertTrue(ok)
+        self.assertEqual(polls, int(d.STILL_MOVING_AFTER / 0.5) + 1)   # the first poll at the looser limit
+
+    def test_moving_scene_never_turned(self):
+        last = [self.view(90 + 3 * (i % 3)) for i in range(200)]
+        self.assertEqual(self.run_frames(last, previous=self.view(90), limit=60)[0], False)
 
 
 class LogIn(unittest.TestCase):
@@ -407,6 +420,118 @@ class ShotSpecs(unittest.TestCase):
                    dict(areas='a', stills=4)):
             with self.subTest(kw=kw), self.assertRaises(SystemExit):
                 d.shot_specs(self.args(**kw))
+
+
+class Looks(unittest.TestCase):
+    consts = {'TILE_MAIN_LIGHT_COLOR_PALE_ORANGE': 30, 'TILE_MAIN_LIGHT_COLOR_PALE_DARK_BLUE': 16,
+              'VFX_DUR_LIGHT_BLUE_20': 156, 'VFX_IMP_LIGHTNING_M': 74, 'WEATHER_RAIN': 1}
+    hours = {'dawn': 6, 'dusk': 18, 'day': 10, 'night': 0, 'minutes': 2}
+
+    def write(self, looks):
+        fd, path = tempfile.mkstemp(suffix='.json')
+        with os.fdopen(fd, 'w') as fh:
+            json.dump(looks, fh)
+        self.addCleanup(os.remove, path)
+        return path
+
+    def test_shipped_looks_resolve(self):
+        looks = d.load_looks(d.LOOKS_FILE)
+        self.assertEqual(set(looks), {'golden-hour', 'misty-dawn', 'moonlit', 'storm'})
+        for lid, look in looks.items():
+            with self.subTest(look=lid):
+                json.dumps(d.look_script(lid, look, self.hours, self.consts))
+
+    def test_golden_hour(self):
+        s = d.look_script('golden-hour', d.load_looks(d.LOOKS_FILE)['golden-hour'], self.hours, self.consts)
+        self.assertEqual(s['hour'], 18)
+        self.assertEqual(s['fog'], {'color': 0xE0A050, 'amount': 12, 'fade': 8.0})
+        self.assertEqual(s['tileLight'], 30)
+        self.assertNotIn('lightning', s)
+        self.assertNotIn('runInto', s)
+
+    def test_dawn_runs_into_the_hour(self):
+        s = d.look_script('misty-dawn', d.load_looks(d.LOOKS_FILE)['misty-dawn'], self.hours, self.consts)
+        self.assertEqual(s['hour'], 6)
+        self.assertEqual(s['runInto'], {'hour': 5, 'minute': 1, 'second': 58})
+
+    def test_storm(self):
+        s = d.look_script('storm', d.load_looks(d.LOOKS_FILE)['storm'], self.hours, self.consts)
+        self.assertEqual((s['hour'], s['weather'], s['sky']), (10, 1, 2))
+        self.assertEqual(s['lightning'], {'effect': 74, 'everyMin': 4.0, 'everyMax': 9.0, 'distMin': 15.0,
+                                          'distMax': 30.0})
+        self.assertEqual(s['wind']['magnitude'], 2.0)
+
+    def test_sky_names_a_row(self):
+        looks = d.load_looks(d.LOOKS_FILE, ['moonlit=37'])
+        self.assertEqual(looks['moonlit']['sky'], 37)
+        for bad in ('moonlit', 'moonlit=sky', 'nolook=3', 'moonlit=256'):
+            with self.subTest(sky=bad), self.assertRaises(SystemExit):
+                d.load_looks(d.LOOKS_FILE, [bad])
+
+    def test_unknown_key_or_no_light_dies(self):
+        light = {'ambient': '#000000', 'diffuse': '#ffffff', 'fog': '#808080', 'fogAmount': 5, 'shadows': True,
+                 'fogClip': 100}
+        self.assertIn('a', d.load_looks(self.write({'a': {'light': light}})))
+        for looks in ({'a': {'light': light, 'skye': 3}}, {'a': {'light': {**light, 'sun': 1}}}, {'a': {}},
+                      {'A b': {'light': light}}):
+            with self.subTest(looks=looks), self.assertRaises(SystemExit):
+                d.load_looks(self.write(looks))
+
+    def test_unknown_constant_or_time_dies(self):
+        for look in ({'tileLight': 'TILE_MAIN_LIGHT_COLOR_PLAID'}, {'time': 'teatime'}, {'time': 24},
+                     {'time': 'minutes'}, {'fog': {'color': 'orange'}}):
+            with self.subTest(look=look), self.assertRaises(SystemExit):
+                d.look_script('x', look, self.hours, self.consts)
+
+    def test_names(self):
+        looks = d.load_looks(d.LOOKS_FILE)
+        self.assertEqual(d.look_names('none, storm,storm', looks), [None, 'storm'])
+        self.assertEqual(d.look_names(None, looks), [])
+        with self.assertRaises(SystemExit):
+            d.look_names('sunset', looks)
+
+    def test_hours_follow_the_module(self):
+        self.assertEqual(d.look_hours({}), self.hours)
+        ifo = {'Mod_DawnHour': {'value': 8}, 'Mod_DuskHour': {'value': 20}, 'Mod_MinPerHour': {'value': 5}}
+        self.assertEqual(d.look_hours(ifo), {'dawn': 8, 'dusk': 20, 'day': 10, 'night': 2, 'minutes': 5})
+        ifo = {'Mod_DawnHour': {'value': 11}, 'Mod_DuskHour': {'value': 21}}
+        self.assertEqual(d.look_hours(ifo)['day'], 16)
+
+    def test_constants(self):
+        text = 'int FOO = 3;\n  int BAR_2   = -1 ;\nfloat PI = 3.14;\n// int NOT = 4;\nint lower = 5;\n'
+        self.assertEqual(d.nwscript_constants(text), {'FOO': 3, 'BAR_2': -1})
+
+    def test_colours(self):
+        self.assertEqual(d.rgb('#E0A050'), 0xE0A050)
+        self.assertEqual(d.bgr('#e0a050'), 0x50A0E0)
+
+    def test_area_copy_has_the_looks_light_in_sun_and_moon(self):
+        are = {'SunAmbientColor': {'type': 'dword', 'value': 1}, 'DayNightCycle': {'type': 'byte', 'value': 0},
+               'IsNight': {'type': 'byte', 'value': 1}, 'SkyBox': {'type': 'byte', 'value': 0},
+               'ResRef': {'type': 'resref', 'value': 'town'}, 'Tag': {'type': 'cexostring', 'value': 'Town'}}
+        look = d.load_looks(d.LOOKS_FILE)['golden-hour']
+        out = d.look_are(are, look, 'dir_lk0')
+        for p in ('Sun', 'Moon'):
+            self.assertEqual(out[f'{p}AmbientColor'], {'type': 'dword', 'value': 0x3C4F5B})
+            self.assertEqual(out[f'{p}DiffuseColor']['value'], 0x6FC8E1)
+            self.assertEqual(out[f'{p}FogAmount'], {'type': 'byte', 'value': 10})
+            self.assertEqual(out[f'{p}Shadows']['value'], 1)
+        self.assertEqual((out['DayNightCycle']['value'], out['IsNight']['value'], out['SkyBox']['value']), (1, 0, 1))
+        self.assertEqual((out['ResRef']['value'], out['Tag']['value']), ('dir_lk0', 'dir_lk0'))
+        self.assertEqual(out['FogClipDist'], {'type': 'float', 'value': 150.0})
+
+    def test_shots_in_looks_one_copy_per_area_and_look(self):
+        table = d.load_looks(d.LOOKS_FILE)
+        copies = {}
+        spot = {'name': 'town-10-20', 'area': 'town', 'kind': 'spot', 'at': [10.0, 20.0], 'encounters': []}
+        shots = d.shots_in_looks(spot, [None, 'storm', 'moonlit'], table, self.hours, self.consts, copies)
+        shots += d.shots_in_looks({**spot, 'name': 'town-1-2'}, ['storm'], table, self.hours, self.consts, copies)
+        self.assertEqual([(s['name'], s['area']) for s in shots],
+                         [('town-10-20', 'town'), ('town-10-20-storm', 'dir_lk0'), ('town-10-20-moonlit', 'dir_lk1'),
+                          ('town-1-2-storm', 'dir_lk0')])
+        self.assertNotIn('look', shots[0])
+        self.assertEqual(shots[1]['look']['id'], 'storm')
+        self.assertEqual(copies, {('town', 'storm'): 'dir_lk0', ('town', 'moonlit'): 'dir_lk1'})
 
 
 @unittest.skipUnless(shutil.which('ffmpeg'), 'needs ffmpeg')

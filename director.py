@@ -2,7 +2,7 @@
 """nwn-director: film the areas of a Neverwinter Nights: Enhanced Edition module.
 
     director.py film MODULE.mod [--areas AREA[,AREA...]] [--spot AREA@X,Y[/FACING]|AREA@TAG ...]
-                                [--event AREA@X,Y=CODE|AREA@TAG=CODE ...] [--stills N]
+                                [--event AREA@X,Y=CODE|AREA@TAG=CODE ...] [--stills N] [--look LOOK[,LOOK...]]
                                 --character CHAR.bic [options]
     director.py areas MODULE.mod
 
@@ -15,6 +15,8 @@ area's tag (as bug reports give it). With --stills N, spots are N stills instead
 (<name>-00.png ... and a contact sheet <name>.png), from a client drawing on the CPU in its own
 virtual display: no GPU, and your desktop is left alone. Videos are filmed off screen on the GPU when VirtualGL is
 installed (vglrun), else on your desktop.
+With --look, each shot is filmed in a look (looks.json: golden hour, misty dawn, moonlit, storm), in a copy of
+its area with the look's light.
 `areas` lists the module's areas (resref, tag, size, exits) to choose from.
 
 See README.md for requirements and how it works.
@@ -281,6 +283,188 @@ def spot_shot(area, git, where_, event=None):
     return shot
 
 
+# ---------------------------------------------------------------- looks
+
+LOOKS_FILE = os.path.join(HERE, 'looks.json')
+LOOK_KEYS = {'name', 'light', 'time', 'sky', 'fog', 'tileLight', 'weather', 'wind', 'mist', 'moon', 'takeFog',
+             'lightning'}
+LIGHT_KEYS = {'ambient', 'diffuse', 'fog', 'fogAmount', 'shadows', 'fogClip'}
+
+
+def load_looks(path, skies=()):
+    """The looks in path ({id: look}, README.md "Looks"), with skies (["LOOK=ROW", ...], from --sky) changing a look's
+    skyboxes.2da row. Dies on a look or key it doesn't know, so a typing slip doesn't film the wrong light."""
+    try:
+        with open(path, encoding='utf-8') as fh:
+            looks = json.load(fh)
+    except (OSError, ValueError) as e:
+        die(f'--looks {path}: {e}')
+    for lid, look in looks.items():
+        if not re.fullmatch(r'[a-z0-9-]+', lid):
+            die(f'{path}: a look\'s id is lower case letters, digits and -, not {lid!r}')
+        unknown = set(look) - LOOK_KEYS | set(look.get('light', {})) - LIGHT_KEYS
+        if unknown:
+            die(f'{path}: look {lid} has keys nwn-director doesn\'t know: {", ".join(sorted(unknown))}')
+        if set(look.get('light', {})) != LIGHT_KEYS:
+            die(f'{path}: look {lid} needs a light with {", ".join(sorted(LIGHT_KEYS))}')
+    for sky in skies:
+        lid, sep, row = sky.partition('=')
+        if not sep or lid.strip() not in looks or not row.strip().isdigit() or int(row) > 255:
+            die(f'--sky {sky}: expected LOOK=ROW, a look of {path} and a skyboxes.2da row (0 to 255)')
+        looks[lid.strip()]['sky'] = int(row)
+    return looks
+
+
+def look_names(arg, looks):
+    """The looks --look asks for, in order: ids of looks, or none (as filmed without a look: 10:00, clear)."""
+    names = [n.strip() for n in (arg or '').split(',') if n.strip()]
+    for n in names:
+        if n != 'none' and n not in looks:
+            die(f'--look {n}: no such look (there are {", ".join(sorted(looks))}, and none)')
+    return [None if n == 'none' else n for n in dict.fromkeys(names)]
+
+
+def nwscript_constants(text):
+    """{name: value} of the integer constants in nwscript.nss's text."""
+    return {m.group(1): int(m.group(2))
+            for m in re.finditer(r'^\s*int\s+([A-Z][A-Z0-9_]*)\s*=\s*(-?\d+)\s*;', text, re.M)}
+
+
+def look_hours(ifo):
+    """{dawn, dusk, day, night}: the hour a look's time means in this module (its dawn and dusk hours), and minutes:
+    its minutes per hour. Day is 10:00, as shots without a look, if that is day here; night is the middle of the
+    night."""
+    dawn = ifo.get('Mod_DawnHour', {}).get('value', 6)
+    dusk = ifo.get('Mod_DuskHour', {}).get('value', 18)
+    day = 10 if (10 - dawn) % 24 < (dusk - dawn) % 24 and 10 not in (dawn, dusk) else \
+        (dawn + (dusk - dawn) % 24 // 2) % 24
+    return {'dawn': dawn, 'dusk': dusk, 'day': day, 'night': (dusk + (dawn - dusk) % 24 // 2) % 24,
+            'minutes': ifo.get('Mod_MinPerHour', {}).get('value', 2)}
+
+
+def rgb(colour):
+    """#rrggbb as a number, 0xRRGGBB (as SetFogColor takes it)."""
+    if not isinstance(colour, str) or not re.fullmatch(r'#[0-9a-fA-F]{6}', colour):
+        die(f'a look\'s colour is #rrggbb, not {colour!r}')
+    return int(colour[1:], 16)
+
+
+def bgr(colour):
+    """#rrggbb as an .are stores colours: 0xBBGGRR."""
+    n = rgb(colour)
+    return ((n & 0xff) << 16) | (n & 0xff00) | (n >> 16)
+
+
+def look_script(lid, look, hours, consts):
+    """A look as dir_load reads it (a shot's "look"): the time as an hour, colours as numbers, nwscript.nss constants'
+    names as their values. Only what the look has: dir_load leaves the rest as it is."""
+    def const(v, what):
+        if isinstance(v, int) and not isinstance(v, bool):
+            return v
+        if isinstance(v, str) and v in consts:
+            return consts[v]
+        die(f'look {lid}: {what} is a number or an nwscript.nss constant, not {v!r}')
+
+    time_ = look.get('time', 'day')
+    hour = hours[time_] if time_ in ('dawn', 'day', 'dusk', 'night') else time_
+    if not isinstance(hour, int) or isinstance(hour, bool) or not 0 <= hour <= 23:
+        die(f'look {lid}: time is dawn, day, dusk, night or an hour (0 to 23), not {time_!r}')
+    out = {'id': lid, 'hour': hour}
+    if time_ == 'dawn':
+        # The client shows the dawn sky only as the clock runs into dawn: entering at dawn shows the day's. So the
+        # cameraman enters at dawn (the tiles' day and night follow the hour the area is entered in), and as the camera
+        # rolls the clock goes back to two seconds before it (dir_load).
+        out['runInto'] = {'hour': (hour - 1) % 24, 'minute': hours.get('minutes', 2) - 1, 'second': 58}
+    if 'sky' in look:
+        out['sky'] = const(look['sky'], 'sky')
+    if 'fog' in look:
+        fog = look['fog']
+        out['fog'] = {'color': rgb(fog['color']), 'amount': int(fog.get('amount', -1)),
+                      'fade': float(fog.get('fade', 0.0))}
+    if 'takeFog' in look:
+        out['takeFog'] = rgb(look['takeFog'])
+    if 'tileLight' in look:
+        out['tileLight'] = const(look['tileLight'], 'tileLight')
+    if 'weather' in look:
+        out['weather'] = const(look['weather'], 'weather')
+    if 'wind' in look:
+        w = look['wind']
+        x, y, z = (float(v) for v in w['direction'])
+        out['wind'] = {'x': x, 'y': y, 'z': z, 'magnitude': float(w['magnitude']), 'yaw': float(w['yaw']),
+                       'pitch': float(w['pitch'])}
+    if 'mist' in look:
+        m = look['mist']
+        out['mist'] = {'water': const(m.get('water', -1), 'mist water'),
+                       'hollow': const(m.get('hollow', -1), 'mist hollow'),
+                       'max': int(m.get('max', 12)), 'range': float(m.get('range', 40))}
+    if 'moon' in look:
+        out['moon'] = {'light': const(look['moon']['light'], 'moon light'),
+                       'height': float(look['moon'].get('height', 12))}
+    if 'lightning' in look:
+        lt = look['lightning']
+        (e0, e1), (d0, d1) = lt.get('every', (4, 9)), lt.get('distance', (15, 30))
+        out['lightning'] = {'effect': const(lt['effect'], 'lightning effect'), 'everyMin': float(e0),
+                            'everyMax': float(max(e0, e1)), 'distMin': float(d0), 'distMax': float(max(d0, d1))}
+    return out
+
+
+def gff_set(data, field, kind, value):
+    """Set a GFF field (nwn_gff JSON), keeping its type if it has one."""
+    data[field] = {'type': data.get(field, {}).get('type', kind), 'value': value}
+
+
+def look_are(are, look, resref):
+    """An area's .are (nwn_gff JSON) as the copy a look is filmed in. No script sets an area's sun or moon colours,
+    so the copy has the look's light, in both the sun's and the moon's: the time of day then changes only the sky. It
+    cycles day and night, so the time picks the sky's dawn, day, dusk or night picture."""
+    light = look['light']
+    for p in ('Sun', 'Moon'):
+        gff_set(are, f'{p}AmbientColor', 'dword', bgr(light['ambient']))
+        gff_set(are, f'{p}DiffuseColor', 'dword', bgr(light['diffuse']))
+        gff_set(are, f'{p}FogColor', 'dword', bgr(light['fog']))
+        gff_set(are, f'{p}FogAmount', 'byte', int(light['fogAmount']))
+        gff_set(are, f'{p}Shadows', 'byte', 1 if light['shadows'] else 0)
+    gff_set(are, 'FogClipDist', 'float', float(light['fogClip']))
+    gff_set(are, 'DayNightCycle', 'byte', 1)
+    gff_set(are, 'IsNight', 'byte', 0)
+    if isinstance(look.get('sky'), int):
+        gff_set(are, 'SkyBox', 'byte', look['sky'])
+    gff_set(are, 'ResRef', 'resref', resref)
+    gff_set(are, 'Tag', 'cexostring', resref)
+    return are
+
+
+def copy_area(base, look, resref, unpacked):
+    """A copy of the area at base (path without extension) for a look, as unpacked/resref.are, .git and .gic."""
+    write_gff(look_are(gff(base + '.are'), look, resref), os.path.join(unpacked, resref + '.are'))
+    for ext in ('.git', '.gic'):
+        if os.path.exists(base + ext):
+            shutil.copy(base + ext, os.path.join(unpacked, resref + ext))
+    return os.path.join(unpacked, resref)
+
+
+def shots_in_looks(shot, looks, table, hours, consts, copies):
+    """The shot once in each look of looks (None: as it is), in filming order. A shot in a look is filmed in a copy of
+    its area, one per area and look: copies ({(area, look): resref}) gets any new one, named dir_lk<n>."""
+    out = []
+    for lid in looks:
+        if not lid:
+            out.append(dict(shot))
+            continue
+        key = (shot['area'], lid)
+        copies.setdefault(key, f'dir_lk{len(copies)}')
+        out.append({**shot, 'area': copies[key], 'name': f'{shot["name"]}-{lid}',
+                    'look': look_script(lid, table[lid], hours, consts)})
+    return out
+
+
+def game_constants(game, work):
+    """nwscript.nss's integer constants, from the game."""
+    run(['nwn_resman_extract', '--quiet', '--root', game, '--no-ovr', '-d', work, 'nwscript.nss'])
+    with open(os.path.join(work, 'nwscript.nss'), encoding='utf-8', errors='replace') as fh:
+        return nwscript_constants(fh.read())
+
+
 # ---------------------------------------------------------------- the module copy
 
 def set_var(ifo, name, kind, value):
@@ -361,19 +545,24 @@ def stills_db(db_dir):
 
 
 def prepare(args, game, work):
-    """Copy the module with dir_load as its OnModuleLoad and the walkthroughs in module variables.
-    Returns the copy's path."""
+    """Copy the module with dir_load as its OnModuleLoad, the shots in module variables, and a copy of an area for
+    each look it is filmed in. Returns the copy's path."""
     unpacked = os.path.join(work, 'module')
     log(f'unpacking {args.module}')
     unpack(args.module, unpacked)
-    ours = [os.path.basename(f) for f in glob.glob(os.path.join(unpacked, 'dir_*.ncs'))
-            if re.fullmatch(r'dir_(load|ev\d+)\.ncs', os.path.basename(f))]
+    ours = [os.path.basename(f) for f in glob.glob(os.path.join(unpacked, 'dir_*.*'))
+            if re.fullmatch(r'dir_(load|ev\d+)\.ncs|dir_lk\d+\.are', os.path.basename(f))]
     if ours:
-        die(f'the module already has scripts named like nwn-director\'s: {", ".join(ours)}')
+        die(f'the module already has files named like nwn-director\'s: {", ".join(ours)}')
 
+    ifo_path = os.path.join(unpacked, 'module.ifo')
+    ifo = gff(ifo_path)
     areas = area_files(unpacked)
     tags = {}
     shots = []
+    looks = getattr(args, 'looks', None) or [None]
+    consts = game_constants(game, work) if any(looks) else {}
+    copies = {}   # (area, look) -> the copy's resref
     for spec in args.shot_specs:
         kind, area, where_, event = spec
         area = area_by_name(area, areas, tags)
@@ -383,10 +572,15 @@ def prepare(args, game, work):
         shot = walk_shot(area, git) if kind == 'walk' else spot_shot(area, git, where_, event)
         if kind == 'walk' and len(shot['stops']) < 2:
             log(f'{area} has no exits to walk between; it will be skipped')
-        shots.append(shot)
+        for s in shots_in_looks(shot, looks, args.look_table, look_hours(ifo), consts, copies):
+            if s['area'] not in areas:
+                areas[s['area']] = copy_area(areas[area], args.look_table[s['look']['id']], s['area'], unpacked)
+            shots.append(s)
+    if copies:
+        log(f'{len(copies)} area copies for looks')
+        ifo.setdefault('Mod_Area_list', {'type': 'list', 'value': []})['value'].extend(
+            {'__struct_id': 6, 'Area_Name': {'type': 'resref', 'value': r}} for r in copies.values())
 
-    ifo_path = os.path.join(unpacked, 'module.ifo')
-    ifo = gff(ifo_path)
     haks = [h['Mod_Hak']['value'] for h in ifo.get('Mod_HakList', {}).get('value', [])]
     missing = [h for h in haks if not os.path.exists(os.path.join(args.hak_dir, h + '.hak'))]
     if missing:
@@ -721,10 +915,10 @@ def black(thumb):
     return len(thumb) == 64 * 36 and max(thumb) < 8
 
 
-def differ(a, b):
-    """Two thumbnails differ: a mean difference over 1.5 in 0 to 255. A turn of the camera makes 15 to 25 at 45
-    degrees; animation in the scene 0.1 to 0.2."""
-    return len(a) != len(b) or sum(abs(x - y) for x, y in zip(a, b)) / len(a) > 1.5
+def differ(a, b, limit=1.5):
+    """Two thumbnails differ: a mean difference over limit in 0 to 255. A turn of the camera makes 15 to 25 at 45
+    degrees; animation in the scene 0.1 to 0.2, and a look's mist or rain 4 to 6 a second."""
+    return len(a) != len(b) or sum(abs(x - y) for x, y in zip(a, b)) / len(a) > limit
 
 
 # Seconds into the first angle after which a picture that holds will do without the black screen first: a client
@@ -736,30 +930,38 @@ FIRST_STILL_GRACE = 20.0
 # picture little from one frame to the next, but a lot over a second.
 STILL_STEADY = 1.0
 
+# A scene that keeps moving (a look's mist, rain) never holds to differ's 1.5: after STILL_MOVING_AFTER seconds of an
+# angle, a picture holds if it changes less than STILL_MOVING over STILL_STEADY, still well under a turn.
+STILL_MOVING_AFTER = 20.0
+STILL_MOVING = 8.0
+
 
 def wait_for_angle(limit, previous=None):
     """Wait until the client has drawn the camera's new angle, and it holds (no change over STILL_STEADY). A later
     angle: once the picture differs from the previous angle's (previous: its thumbnail). The first angle: once the
     screen has been black (dir_load blacks it out while it sets the camera, and the client does what the server says
     in order, so the picture after the black has the camera in place) and isn't any more, nor a loading screen; or,
-    if no black has shown after FIRST_STILL_GRACE, any picture that holds. False if that doesn't happen within limit
-    seconds."""
+    if no black has shown after FIRST_STILL_GRACE, any picture that holds. A moving scene holds to STILL_MOVING after
+    STILL_MOVING_AFTER. False if that doesn't happen within limit seconds."""
     start = time.time()
     seen_black = previous is not None
     held = []   # (time, thumbnail) since the new angle appeared
     while time.time() - start < limit:
         thumb = grab()
         now = time.time()
+        tolerance = STILL_MOVING if now - start >= STILL_MOVING_AFTER else 1.5
         if black(thumb):
             seen_black, held = True, []
         elif loading(thumb) or not (seen_black or now - start >= FIRST_STILL_GRACE):
             held = []
-        elif held or previous is None or differ(thumb, previous):
+        elif previous is not None and tolerance > 1.5 and not differ(thumb, previous, tolerance):
+            held = []   # a moving scene the camera hasn't turned from
+        elif held or previous is None or differ(thumb, previous, tolerance):
             held.append((now, thumb))
             before = [t for t in held if t[0] <= now - STILL_STEADY]
-            if before and not differ(thumb, before[-1][1]):
+            if before and not differ(thumb, before[-1][1], tolerance):
                 return True
-            if before and differ(thumb, before[-1][1]):
+            if before:
                 held = [(now, thumb)]   # still moving: hold from here
         time.sleep(0.5)
     return False
@@ -1119,6 +1321,13 @@ def main():
     f.add_argument('--vglrun', metavar='PATH',
                    help="VirtualGL's vglrun, to film off screen on the GPU ($NWN_DIRECTOR_VGLRUN; else found on "
                         'PATH, in /opt/VirtualGL/bin or ~/.local/opt/virtualgl/opt/VirtualGL/bin)')
+    f.add_argument('--look', metavar='LOOK[,LOOK...]',
+                   help='film every shot in each of these looks (looks.json: golden-hour, misty-dawn, moonlit, storm; '
+                        'none: as without), in a copy of its area with the look\'s light')
+    f.add_argument('--looks', dest='looks_file', default=LOOKS_FILE, metavar='FILE',
+                   help='another looks file (looks.json)')
+    f.add_argument('--sky', action='append', default=[], metavar='LOOK=ROW',
+                   help='film LOOK under skyboxes.2da row ROW instead of its own sky (repeatable)')
     f.add_argument('--seconds', type=float, default=45, help='seconds to film each shot at most (45)')
     f.add_argument('--run', action='store_true', help='the walker runs instead of walking')
     f.add_argument('--out', help='folder for the videos (out/<date-time>)')
@@ -1152,6 +1361,8 @@ def main():
         if not os.path.exists(args.character):
             die(f'no character at {args.character}')
         args.shot_specs = shot_specs(args)
+        args.look_table = load_looks(args.looks_file, args.sky)
+        args.looks = look_names(args.look, args.look_table)
     args.func(args)
 
 

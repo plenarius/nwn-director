@@ -9,7 +9,14 @@ Versions follow [Semantic Versioning](https://semver.org/). Before 1.0, a minor 
   virtual display of its own, with the film settings, and its sound goes into a sink of nwn-director's own: your
   screen, desktop and speakers are left alone, and the desktop may be locked. Without VirtualGL, or with `--desktop`,
   it films on the desktop as before.
-
+- **`film --look`: looks.** Golden hour, misty dawn, moonlit and storm ([looks.json](looks.json)): each shot is filmed
+  once per look, with the look's time, sky, fog, tile lights, weather and temporary mist, lights and lightning, in a
+  copy of its area with the look's sun and moon colours. `--sky LOOK=ROW` films a look under another sky, `--looks`
+  takes another looks file.
+- **`--stills` in a scene that keeps moving** (a look's mist or rain): after 20 seconds an angle is saved once its
+  picture changes little, instead of waiting out the 9 minutes for one that never holds still.
+- **The invisible walker casts no shadow** in an area that cycles day and night: it is cutscene-invisible now, as the
+  cameraman is.
 - **`film`: clips keep real time.** On a busy machine the recorder missed frames and the clip came out shorter than
   the shot, playing fast (an 18 s clip of a 20 s circle), so clips of the same shot length fell out of step. A missed
   frame is now shown twice instead.
