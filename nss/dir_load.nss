@@ -561,6 +561,12 @@ void Dir_Action(object oCam, object oWalker, int nShot, int bWalk, string sName)
 void Dir_Roll(object oCam, object oWalker, object oArea, int nShot)
 {
     json jShot = Dir_Shot(nShot);
+    // A dawn look: the client shows the dawn sky only as the clock runs into dawn, so it goes back a few seconds now,
+    // with the cameraman in the area and nothing of the shot scheduled yet (SetTime runs pending DelayCommands).
+    json jRunInto = JsonObjectGet(JsonObjectGet(jShot, "look"), "runInto");
+    if (JsonGetType(jRunInto) == JSON_TYPE_OBJECT)
+        SetTime(Dir_LookInt(jRunInto, "hour", 0), Dir_LookInt(jRunInto, "minute", 0),
+            Dir_LookInt(jRunInto, "second", 0), 0);
     int bWalk = Dir_ShotString(jShot, "kind") == "walk";
     // Stills: black until the camera is set (Dir_Still lifts it). A slow client can take seconds to move the
     // camera into place; the client does what the server says in order, so the first picture after the black has

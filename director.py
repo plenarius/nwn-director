@@ -331,13 +331,15 @@ def nwscript_constants(text):
 
 
 def look_hours(ifo):
-    """{dawn, dusk, day, night}: the hour a look's time means in this module (its dawn and dusk hours). Day is 10:00,
-    as shots without a look, if that is day here; night is the middle of the night."""
+    """{dawn, dusk, day, night}: the hour a look's time means in this module (its dawn and dusk hours), and minutes:
+    its minutes per hour. Day is 10:00, as shots without a look, if that is day here; night is the middle of the
+    night."""
     dawn = ifo.get('Mod_DawnHour', {}).get('value', 6)
     dusk = ifo.get('Mod_DuskHour', {}).get('value', 18)
     day = 10 if (10 - dawn) % 24 < (dusk - dawn) % 24 and 10 not in (dawn, dusk) else \
         (dawn + (dusk - dawn) % 24 // 2) % 24
-    return {'dawn': dawn, 'dusk': dusk, 'day': day, 'night': (dusk + (dawn - dusk) % 24 // 2) % 24}
+    return {'dawn': dawn, 'dusk': dusk, 'day': day, 'night': (dusk + (dawn - dusk) % 24 // 2) % 24,
+            'minutes': ifo.get('Mod_MinPerHour', {}).get('value', 2)}
 
 
 def rgb(colour):
@@ -364,10 +366,15 @@ def look_script(lid, look, hours, consts):
         die(f'look {lid}: {what} is a number or an nwscript.nss constant, not {v!r}')
 
     time_ = look.get('time', 'day')
-    hour = hours.get(time_, time_)
-    if not isinstance(hour, int) or not 0 <= hour <= 23:
+    hour = hours[time_] if time_ in ('dawn', 'day', 'dusk', 'night') else time_
+    if not isinstance(hour, int) or isinstance(hour, bool) or not 0 <= hour <= 23:
         die(f'look {lid}: time is dawn, day, dusk, night or an hour (0 to 23), not {time_!r}')
     out = {'id': lid, 'hour': hour}
+    if time_ == 'dawn':
+        # The client shows the dawn sky only as the clock runs into dawn: entering at dawn shows the day's. So the
+        # cameraman enters at dawn (the tiles' day and night follow the hour the area is entered in), and as the camera
+        # rolls the clock goes back to two seconds before it (dir_load).
+        out['runInto'] = {'hour': (hour - 1) % 24, 'minute': hours.get('minutes', 2) - 1, 'second': 58}
     if 'sky' in look:
         out['sky'] = const(look['sky'], 'sky')
     if 'fog' in look:

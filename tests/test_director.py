@@ -425,7 +425,7 @@ class ShotSpecs(unittest.TestCase):
 class Looks(unittest.TestCase):
     consts = {'TILE_MAIN_LIGHT_COLOR_PALE_ORANGE': 30, 'TILE_MAIN_LIGHT_COLOR_PALE_DARK_BLUE': 16,
               'VFX_DUR_LIGHT_BLUE_20': 156, 'VFX_IMP_LIGHTNING_M': 74, 'WEATHER_RAIN': 1}
-    hours = {'dawn': 6, 'dusk': 18, 'day': 10, 'night': 0}
+    hours = {'dawn': 6, 'dusk': 18, 'day': 10, 'night': 0, 'minutes': 2}
 
     def write(self, looks):
         fd, path = tempfile.mkstemp(suffix='.json')
@@ -447,6 +447,12 @@ class Looks(unittest.TestCase):
         self.assertEqual(s['fog'], {'color': 0xE0A050, 'amount': 12, 'fade': 8.0})
         self.assertEqual(s['tileLight'], 30)
         self.assertNotIn('lightning', s)
+        self.assertNotIn('runInto', s)
+
+    def test_dawn_runs_into_the_hour(self):
+        s = d.look_script('misty-dawn', d.load_looks(d.LOOKS_FILE)['misty-dawn'], self.hours, self.consts)
+        self.assertEqual(s['hour'], 6)
+        self.assertEqual(s['runInto'], {'hour': 5, 'minute': 1, 'second': 58})
 
     def test_storm(self):
         s = d.look_script('storm', d.load_looks(d.LOOKS_FILE)['storm'], self.hours, self.consts)
@@ -473,7 +479,7 @@ class Looks(unittest.TestCase):
 
     def test_unknown_constant_or_time_dies(self):
         for look in ({'tileLight': 'TILE_MAIN_LIGHT_COLOR_PLAID'}, {'time': 'teatime'}, {'time': 24},
-                     {'fog': {'color': 'orange'}}):
+                     {'time': 'minutes'}, {'fog': {'color': 'orange'}}):
             with self.subTest(look=look), self.assertRaises(SystemExit):
                 d.look_script('x', look, self.hours, self.consts)
 
@@ -486,8 +492,8 @@ class Looks(unittest.TestCase):
 
     def test_hours_follow_the_module(self):
         self.assertEqual(d.look_hours({}), self.hours)
-        ifo = {'Mod_DawnHour': {'value': 8}, 'Mod_DuskHour': {'value': 20}}
-        self.assertEqual(d.look_hours(ifo), {'dawn': 8, 'dusk': 20, 'day': 10, 'night': 2})
+        ifo = {'Mod_DawnHour': {'value': 8}, 'Mod_DuskHour': {'value': 20}, 'Mod_MinPerHour': {'value': 5}}
+        self.assertEqual(d.look_hours(ifo), {'dawn': 8, 'dusk': 20, 'day': 10, 'night': 2, 'minutes': 5})
         ifo = {'Mod_DawnHour': {'value': 11}, 'Mod_DuskHour': {'value': 21}}
         self.assertEqual(d.look_hours(ifo)['day'], 16)
 

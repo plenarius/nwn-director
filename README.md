@@ -175,6 +175,9 @@ How it works:
   the cut.
 - **The time is set first**, before anything of the shot is scheduled: `SetTime` runs every delayed command at once.
   It only goes forward, so an earlier hour is the next day's.
+- **The cameraman enters the area after the time is set:** a jump of the clock doesn't switch the day and night of the
+  area a player is in, nor its sky. Dusk and night show on entering; the dawn sky shows only as the clock runs into
+  dawn, so a dawn look sets the clock back to two seconds before dawn as the camera rolls.
 - **Fog amount has no fade** in the game: a look sets it before the roll, and fades only the colour.
 
 The looks are data: a look in another file (`--looks FILE`) has these keys, all but `light` optional. Constants are
