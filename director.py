@@ -302,7 +302,9 @@ DIST_RATE = 2.0
 # SetCameraLimits: the farthest the camera may be from what it follows.
 FLIGHT_MAX_DIST = 40.0
 FLIGHT_KEY_KEYS = {'t', 'at', 'height', 'distance', 'pitch', 'heading', 'lookAt'}
-FLIGHT_KEYS = {'area', 'name', 'keys', 'pivot', 'ease', 'step', 'nightfall', 'looks'}
+FLIGHT_KEYS = {'area', 'name', 'keys', 'pivot', 'ease', 'step', 'nightfall', 'looks', 'ramp'}
+# How many rising speeds a camera move starts with (plan_flight).
+RAMP_STEPS = 3
 
 
 def _point(v):
@@ -358,7 +360,7 @@ def load_flight(path):
             die(f'{where_}: "lookAt" is [x, y] in metres')
     if keys[0]['t'] != 0:
         die(f'--flight {path}: the first key is at "t": 0')
-    for name, lo, hi in (('pivot', 0.0, 30.0), ('ease', 0.0, None), ('step', 0.5, 30.0)):
+    for name, lo, hi in (('pivot', 0.0, 30.0), ('ease', 0.0, None), ('step', 0.5, 30.0), ('ramp', 0.0, 10.0)):
         if name in spec and (not _number(spec[name]) or spec[name] < lo or (hi is not None and spec[name] > hi)):
             die(f'--flight {path}: "{name}" is a number from {lo}' + (f' to {hi}' if hi else ''))
     if 'nightfall' in spec and (not _number(spec['nightfall']) or not 0 < spec['nightfall'] < keys[-1]['t']):
@@ -514,6 +516,7 @@ def plan_flight(spec, git=None):
     ease = float(spec.get('ease', 3.0))
     step = float(spec.get('step', 1.0))
     pivot = float(spec.get('pivot', 2.0))
+    ramp = float(spec.get('ramp', 2.0))
     name = spec.get('name') or f'{spec["area"]}-flight'
     start = flight_position(keys, 0.0)
     times, dist, (pts, arc) = flight_distance(keys, ease)
@@ -555,8 +558,19 @@ def plan_flight(spec, git=None):
     for a, b in zip(keys, keys[1:]):
         heading, dist, pitch = camera(b)
         span = b['t'] - a['t']
-        speed = camera_speed(_turns(prev['dir'], heading), span, pitch - prev['pitch'], dist - prev['dist'])
-        cams.append({'t': float(a['t']), 'dir': heading, 'dist': dist, 'pitch': pitch, 'speed': speed})
+        # A transition starts at full speed, which showed as a lurch at each key: the move starts in RAMP_STEPS steps
+        # of rising speed over its first `ramp` seconds (each a new SetCameraFacing to the same target), and its full
+        # speed makes up the time the slow start lost.
+        lead = min(ramp, span / 4)
+        speed = camera_speed(_turns(prev['dir'], heading), span - lead / 2, pitch - prev['pitch'], dist - prev['dist'])
+        target = {'dir': heading, 'dist': dist, 'pitch': pitch}
+        if lead > 0 and speed > 2:
+            for j in range(RAMP_STEPS):
+                cams.append({'t': round(a['t'] + lead * j / RAMP_STEPS, 2), **target,
+                             'speed': max(1, round(speed * (j + 1) / (RAMP_STEPS + 1)))})
+            cams.append({'t': round(a['t'] + lead, 2), **target, 'speed': speed})
+        else:
+            cams.append({'t': float(a['t']), **target, 'speed': speed})
         prev = cams[-1]
     shot = {'name': name, 'area': spec['area'], 'kind': 'flight', 'at': [round(c, 2) for c in start],
             'seconds': total, 'pivot': pivot, 'legs': legs, 'cams': cams,
@@ -881,6 +895,8 @@ def prepare(args, game, work):
         die(f'haks the module needs are not in {args.hak_dir}: {", ".join(missing)} (--hak-dir)')
     set_var(ifo, 'DIRECTOR_ONLOAD', 3, ifo.get('Mod_OnModLoad', {}).get('value', ''))
     set_var(ifo, 'DIRECTOR_SHOTS', 3, json.dumps(shots, separators=(',', ':')))
+    # The module's dawn and dusk hours, for dir_load to step the clock a phase at a time (Dir_SetClock).
+    set_var(ifo, 'DIRECTOR_HOURS', 3, json.dumps({k: v for k, v in look_hours(ifo).items() if k in ('dawn', 'dusk')}))
     set_var(ifo, 'DIRECTOR_SECONDS', 2, float(args.seconds))
     set_var(ifo, 'DIRECTOR_RUN', 1, 1 if args.run else 0)
     set_var(ifo, 'DIRECTOR_STILLS', 1, args.stills)
