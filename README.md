@@ -3,8 +3,8 @@
 Scripted camera capture for Neverwinter Nights: Enhanced Edition modules.
 
 Give it a module and what to film. It runs the module on a local server, logs your game client
-in as an invisible cameraman, and films each shot: one video per shot, 1080p60 with the game's
-sound.
+in as an invisible cameraman, and films each shot: one video per shot, 1080p at a steady 30 frames a second, with
+the game's sound.
 
 - **Walkthroughs** of whole areas, to cut into a trailer or a montage.
 - **Spots**: a slow circle around one place (a point, or an object by tag), to see what is
@@ -13,6 +13,9 @@ sound.
 - **Events**: a spot where something happens a few seconds in: a script of the module, or a
   line of NWScript you give it (open a door, cast a spell, spawn a creature), so the clip shows
   what the engine really does.
+- **Flights**: long camera moves from keyframes you give (where, how high, which way, how steep), flown smoothly
+  over a minute or more: a crane rising over a ridge, a low glide over water, a dolly along a canyon. See
+  [Flights](#flights).
 
 Any shot can be filmed in a **look** (`--look`): golden hour, misty dawn, moonlit or storm. See [Looks](#looks).
 
@@ -124,6 +127,8 @@ Options (`./director.py film --help` for all of them):
 | `--areas A,B` | walkthroughs of these areas, in this order |
 | `--spot AREA@X,Y` / `--spot AREA@TAG` | circle a point, or an object by tag (repeatable); add `/FACING` (degrees, 0 east, 90 north) to start the circle looking that way |
 | `--event AREA@X,Y=CODE` / `--event AREA@TAG=CODE` | a spot where CODE runs 3 seconds in (repeatable) |
+| `--flight FILE` | a [flight](#flights) from the keyframes in FILE (repeatable) |
+| `--fps N` | frames a second the videos are recorded at, constant (default 30) |
 | `--stills N` | spots as N stills and a contact sheet instead of a video, drawn on the CPU in a virtual display (spots only) |
 | `--look LOOK,LOOK` | film every shot once in each of these [looks](#looks) (`none`: as without one) |
 | `--looks FILE` | another looks file instead of [looks.json](looks.json) |
@@ -204,6 +209,64 @@ numbers or their names in `nwscript.nss`.
 **Limits:** the looks are made for outdoor areas; in one underground there is no sky to see. Lightning strikes behind
 the camera, so its flash and thunder are seen and heard but not its bolt. Mist goes where the area's walkmesh says
 water or a hollow is, so water that isn't walkmesh (a picture of water on the ground) gets none.
+
+## Flights
+
+A flight is a camera move planned as keyframes, in a JSON file given with `--flight` (one file a flight):
+
+```json
+{
+  "area": "lakevale",
+  "name": "vale-at-dusk",
+  "pivot": 3,
+  "ease": 4,
+  "nightfall": 46,
+  "keys": [
+    {"t": 0,  "at": [84, 34], "height": 4,  "pitch": 80, "lookAt": [86, 80]},
+    {"t": 22, "at": [80, 44], "height": 22, "pitch": 46, "lookAt": [88, 78]},
+    {"t": 48, "at": [69, 48], "height": 14, "pitch": 58, "lookAt": [58, 64]},
+    {"t": 80, "at": [64, 55], "height": 5,  "pitch": 78, "lookAt": [53, 63]}
+  ]
+}
+```
+
+| Key | |
+|---|---|
+| `area` | the area's resref or tag |
+| `name` | the clip's name (`<area>-flight`) |
+| `keys` | at least two keyframes, `t` seconds from the start (the first at 0), rising |
+| a key's `at` | `[x, y]`, metres: where the camera's carrier is (it walks there, so it must be walkable ground) |
+| a key's `height` or `distance` | how high the camera is over the ground under the carrier, or how far it is from the point it looks at (1 to 40 m) |
+| a key's `pitch` | 1 looks straight down, 89 is level |
+| a key's `heading` or `lookAt` | the way the camera looks (degrees, 0 east, 90 north), or a point `[x, y]` to look at; neither: the way the carrier goes |
+| `pivot` | how high over the carrier the point the camera turns about is, metres (2): a raised pivot makes an aerial |
+| `ease` | seconds over which the move starts from rest and comes to rest (3) |
+| `step` | seconds a leg of the carrier's path lasts (1) |
+| `nightfall` | seconds into the flight when night falls (the clock is set so; only without a look) |
+| `looks` | looks to film this flight in, in place of `--look` |
+
+The camera's height is `pivot + distance × cos(pitch)`. The clip lasts the last key's `t`, whatever `--seconds` says.
+
+How it flies, and why (measured off screen on a GTX 1050 with 4 cores, by the image's motion frame to frame):
+
+- **The camera follows an invisible carrier**, a creature that walks the keys' points on a smooth curve through them,
+  in legs of `step` seconds, each at its own pace: the creature's movement is drawn smoothly by the client. Its speed
+  in each stretch between keys is steady, changes of speed at the keys are blended over 4 seconds, and the start and
+  end are eased. It walks at `creaturespeed.2da`'s fastest row (5.5 m/s) and is slowed or sped up by movement speed
+  effects, so a flight can go from about 0.06 to 21 m/s. It is immortal rather than plot: a plot creature ignores
+  movement speed decreases (a 50% and an 80% decrease changed nothing).
+- **The camera turns, tilts and zooms by itself between keys**: one `SetCameraFacing` per key, at the transition speed
+  that gets it to the next key's direction, distance and pitch on time. A transition turns at a steady
+  0.23 × n<sup>1.5</sup> degrees a second (n 2: 0.65, n 5: 2.6, n 20: about 16), tilts at about 0.2 × n degrees a second
+  and moves in or out at about 2 × (n / 20)<sup>0.63</sup> metres a second (roughly measured); the fastest need sets n,
+  and the rest arrive early. A shot that set the camera again every second, as walkthroughs and spots do, moved in
+  pulses, one a second.
+- **The pivot is set once, before the camera rolls**: `SetCameraHeight` doesn't ease, it jumps.
+- **Not used:** a visual transform (`SetObjectVisualTransform`) moves what is drawn, not the creature, and the camera
+  stays where the creature is: a glide or a rise of the carrier by visual transform left the picture still.
+- **The camera passes through what is in its way** (collision is off for flights, so it doesn't jump when ground comes
+  between it and the carrier): plan the keys clear of trees, rocks and walls, with the carrier on walkable ground. A
+  carrier that meets a placeable walks round it.
 
 ## GUI shots
 
@@ -321,8 +384,13 @@ access to the card (`/dev/dri/card*`): the logged-in desktop user has it, otherw
 
 Checked on a GTX 1050 (2 GB, driver 580) with 4 CPU cores, at 1920x1080 with the film settings: a walk over a keep's
 torch-lit rooftop drew 40 to 60 frames a second, and a foggy swamp 30 to 45 while the server and another build shared
-the CPU. The GPU was about a quarter busy, so the CPU sets the pace. The clip is always 60 frames a second; a frame that
-came late is shown twice. Nothing appeared on the desktop.
+the CPU. The GPU was about a quarter busy, so the CPU sets the pace. Nothing appeared on the desktop.
+
+The clip is recorded at a steady 30 frames a second (`--fps`), the client still allowed 60: a frame that came late is
+shown twice. Recorded at 60 from a client drawing 28 to 50, 54% of a moving shot's frames were repeats, unevenly, and it
+juddered; at 30 with the client capped at 30 too, 28%; at 30 with the client allowed 60, under 2% (a frame-to-frame
+speed variation of 0.1 of the motion, against 0.9). Turning grass, shadows and anti-aliasing off didn't make it
+smoother.
 
 ## Your CD key
 

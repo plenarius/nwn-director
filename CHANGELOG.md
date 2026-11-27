@@ -4,6 +4,13 @@ Versions follow [Semantic Versioning](https://semver.org/). Before 1.0, a minor 
 
 ## Unreleased
 
+- **`film --flight FILE`: flights.** Long camera moves from keyframes (where, how high, which way or what to look at,
+  how steep), flown smoothly in their own time, with looks per flight and an optional nightfall during the flight
+  ([README: Flights](README.md#flights)). An invisible carrier walks the keys' points on a smooth curve at eased,
+  blended speeds; the camera's moves between keys are one engine transition each, timed to arrive.
+- **`film`: videos are recorded at a steady 30 frames a second** (`--fps` to change it), the client still allowed 60. At
+  60, a client drawing 30 to 50 frames a second showed half the frames twice, unevenly, and moves juddered.
+
 - **`film`: films off screen on the GPU.** With VirtualGL there (installed, or its `.deb` unpacked under
   `~/.local/opt/virtualgl`; `--vglrun` or `$NWN_DIRECTOR_VGLRUN` to point at it), the client draws on the GPU in a
   virtual display of its own, with the film settings, and its sound goes into a sink of nwn-director's own: your
