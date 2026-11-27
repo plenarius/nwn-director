@@ -242,6 +242,7 @@ A flight is a camera move planned as keyframes, in a JSON file given with `--fli
 | `pivot` | how high over the carrier the point the camera turns about is, metres (2): a raised pivot makes an aerial |
 | `ease` | seconds over which the move starts from rest and comes to rest (3) |
 | `step` | seconds a leg of the carrier's path lasts (1) |
+| `ramp` | seconds over which each camera move starts, in rising speeds (2; 0: at full speed) |
 | `nightfall` | seconds into the flight when night falls (the clock is set so; only without a look) |
 | `looks` | looks to film this flight in, in place of `--look` |
 
@@ -261,6 +262,12 @@ How it flies, and why (measured off screen on a GTX 1050 with 4 cores, by the im
   and moves in or out at about 2 × (n / 20)<sup>0.63</sup> metres a second (roughly measured); the fastest need sets n,
   and the rest arrive early. A shot that set the camera again every second, as walkthroughs and spots do, moved in
   pulses, one a second.
+- **A move starts in steps, and stops at once.** A transition starts at its full speed, which showed as a small lurch
+  at each key. So each move starts with three transitions to the same target at rising speeds over its first `ramp`
+  seconds (the motion charts show the start spread over about 2 s instead of a step), and its full speed makes up the
+  time. The speeds are whole numbers, so a slow move (n 2 or less) can't ramp, and each step is still a small change.
+  A move that arrives before the next key stops there at once: plan keys so that turns, tilts and zooms run until the
+  next key (similar changes key to key, no sudden big turns), and keep the heading steady where nothing needs to turn.
 - **The pivot is set once, before the camera rolls**: `SetCameraHeight` doesn't ease, it jumps.
 - **Not used:** a visual transform (`SetObjectVisualTransform`) moves what is drawn, not the creature, and the camera
   stays where the creature is: a glide or a rise of the carrier by visual transform left the picture still.

@@ -628,7 +628,7 @@ class Flights(unittest.TestCase):
         self.assertLess(shot['legs'][0]['pct'], shot['legs'][len(shot['legs']) // 2]['pct'])
 
     def test_plan_camera_one_move_per_key(self):
-        shot = d.plan_flight(self.load(FLIGHT))
+        shot = d.plan_flight(self.load({**FLIGHT, 'ramp': 0}))
         cams = shot['cams']
         self.assertEqual(len(cams), 3)
         self.assertEqual(cams[0]['speed'], 0)                       # snapped before the roll
@@ -636,6 +636,23 @@ class Flights(unittest.TestCase):
         self.assertAlmostEqual(cams[0]['dist'], (6 - 3) / math.cos(math.radians(75)), places=1)
         self.assertEqual(cams[2]['dist'], 8)
         self.assertTrue(all(1 <= c['speed'] <= 100 for c in cams[1:]))
+
+    def test_plan_camera_moves_start_with_rising_speeds(self):
+        shot = d.plan_flight(self.load(FLIGHT))
+        cams = shot['cams'][1:]
+        moves = {}
+        for c in cams:
+            moves.setdefault((c['dir'], c['dist'], c['pitch']), []).append(c)
+        for steps in moves.values():
+            speeds = [c['speed'] for c in steps]
+            if len(steps) > 1:
+                self.assertEqual(len(steps), d.RAMP_STEPS + 1)
+                self.assertEqual(speeds, sorted(speeds))           # rising
+                self.assertLess(speeds[0], speeds[-1])
+                self.assertLessEqual(steps[-1]['t'] - steps[0]['t'], 2.0)
+        # the ramp's start costs time: its full speed is at least what the move needs without one
+        flat = d.plan_flight(self.load({**FLIGHT, 'ramp': 0}))['cams']
+        self.assertGreaterEqual(max(c['speed'] for c in cams), max(c['speed'] for c in flat[1:]))
 
     def test_too_fast_or_too_far_dies(self):
         fast = {**FLIGHT, 'keys': [FLIGHT['keys'][0], {**FLIGHT['keys'][1], 't': 1}]}
