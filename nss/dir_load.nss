@@ -385,12 +385,40 @@ void Dir_Unlook(object oArea)
     SetWeather(oArea, WEATHER_USE_AREA_SETTINGS);
 }
 
+// Set the clock to nHour:00. SetTime only goes forward: an hour not ahead of now is the next day's, and a jump of a
+// whole day (dusk to the next dusk) left the client showing the night sky over dusk light (the second golden-hour
+// shot of a run). So such a jump goes a phase at a time (night, dawn, day, then on), each step forward and short.
+void Dir_SetClock(int nHour)
+{
+    int nNow = GetTimeHour();
+    if (nHour > nNow)
+    {
+        SetTime(nHour, 0, 0, 0);
+        return;
+    }
+    json jH = JsonParse(GetLocalString(GetModule(), "DIRECTOR_HOURS"));
+    int nDawn = Dir_JsonInt(jH, "dawn", 6);
+    int nDusk = Dir_JsonInt(jH, "dusk", 18);
+    int i;
+    for (i = 1; i <= 24; i++)
+    {
+        int h = (nNow + i) % 24;
+        if (h == nHour)
+        {
+            SetTime(h, 0, 0, 0);
+            return;
+        }
+        if (h == nDawn || h == (nDawn + 1) % 24 || h == nDusk || h == (nDusk + 1) % 24)
+            SetTime(h, 0, 0, 0);
+    }
+}
+
 // The shot's time (10:00, or its look's) and weather (clear, or its look's), every encounter on, then its look.
 // SetTime comes first, before anything of the shot is scheduled: it runs every pending DelayCommand at once.
 void Dir_Set(object oArea, json jShot, location lAt)
 {
     json jLook = JsonObjectGet(jShot, "look");
-    SetTime(Dir_LookInt(jLook, "hour", Dir_JsonInt(jShot, "hour", 10)), 0, 0, 0);
+    Dir_SetClock(Dir_LookInt(jLook, "hour", Dir_JsonInt(jShot, "hour", 10)));
     SetWeather(oArea, Dir_LookInt(jLook, "weather", WEATHER_CLEAR));
     object o = GetFirstObjectInArea(oArea);
     while (GetIsObjectValid(o))
