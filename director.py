@@ -2,7 +2,8 @@
 """nwn-director: film the areas of a Neverwinter Nights: Enhanced Edition module.
 
     director.py film MODULE.mod [--areas AREA[,AREA...]] [--spot AREA@X,Y[/FACING]|AREA@TAG ...]
-                                [--event AREA@X,Y=CODE|AREA@TAG=CODE ...] [--stills N] [--look LOOK[,LOOK...]]
+                                [--event AREA@X,Y=CODE|AREA@TAG=CODE ...] [--flight FILE ...] [--stills N]
+                                [--look LOOK[,LOOK...]]
                                 --character CHAR.bic [options]
     director.py areas MODULE.mod
 
@@ -10,7 +11,8 @@
 (Docker), logs your game client in as the cameraman and records every shot to OUT/<name>.mp4:
 a walkthrough of each area in --areas (<area>.mp4), a slow circle around each --spot
 (<area>-<x>-<y>.mp4 or <area>-<tag>.mp4), and the same for each --event, with its CODE run a
-few seconds in (<area>-<x>-<y>-event.mp4 or <area>-<tag>-event.mp4). An AREA is a resref or an
+few seconds in (<area>-<x>-<y>-event.mp4 or <area>-<tag>-event.mp4), and each --flight, a camera move from the
+keyframes in its file (<name>.mp4). An AREA is a resref or an
 area's tag (as bug reports give it). With --stills N, spots are N stills instead of a video
 (<name>-00.png ... and a contact sheet <name>.png), from a client drawing on the CPU in its own
 virtual display: no GPU, and your desktop is left alone. Videos are filmed off screen on the GPU when VirtualGL is
@@ -280,6 +282,287 @@ def spot_shot(area, git, where_, event=None):
     if event:
         shot['event'] = event
         shot['name'] += '-event'
+    return shot
+
+
+# ---------------------------------------------------------------- flights
+
+# The flight's carrier walks at creaturespeed.2da row 8 (DM_Fast: 5.5 m/s walking, 11 running), slowed or sped up by
+# up to 99% with movement speed effects: from about 0.06 to 21.9 m/s.
+FLIGHT_RATE = 8
+FLIGHT_WALK, FLIGHT_RUN = 5.5, 11.0
+FLIGHT_MAX_SPEED = FLIGHT_RUN * 1.99
+# A camera transition (SetCameraFacing's nTransitionType n) moves the camera at speeds measured off screen on a GTX 1050
+# (from the picture's motion): it turns at a steady TURN_RATE * n ** 1.5 degrees a second (n 2: 0.65, n 5: 2.6, n 20:
+# about 16), tilts at about PITCH_RATE * n degrees a second (n 20: 4, n 60: 12) and moves in or out at about
+# DIST_RATE * (n / 20) ** 0.63 metres a second (n 20: 2, n 60: 4). The tilt and distance measures are rough.
+TURN_RATE = 0.23
+PITCH_RATE = 0.2
+DIST_RATE = 2.0
+# SetCameraLimits: the farthest the camera may be from what it follows.
+FLIGHT_MAX_DIST = 40.0
+FLIGHT_KEY_KEYS = {'t', 'at', 'height', 'distance', 'pitch', 'heading', 'lookAt'}
+FLIGHT_KEYS = {'area', 'name', 'keys', 'pivot', 'ease', 'step', 'nightfall', 'looks'}
+
+
+def _point(v):
+    return isinstance(v, list) and len(v) == 2 and all(isinstance(c, (int, float)) and not isinstance(c, bool)
+                                                       for c in v)
+
+
+def _number(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def load_flight(path):
+    """A flight file (README.md "Flights"), checked: dies naming what is wrong."""
+    try:
+        with open(path, encoding='utf-8') as fh:
+            spec = json.load(fh)
+    except (OSError, ValueError) as e:
+        die(f'--flight {path}: {e}')
+    if not isinstance(spec, dict):
+        die(f'--flight {path}: expected an object with "area" and "keys"')
+    unknown = set(spec) - FLIGHT_KEYS
+    if unknown:
+        die(f'--flight {path}: keys nwn-director doesn\'t know: {", ".join(sorted(unknown))}')
+    if not isinstance(spec.get('area'), str) or not spec['area'].strip():
+        die(f'--flight {path}: "area" is the area\'s resref or tag')
+    keys = spec.get('keys')
+    if not isinstance(keys, list) or len(keys) < 2:
+        die(f'--flight {path}: "keys" needs at least two keyframes')
+    last = None
+    for i, k in enumerate(keys):
+        where_ = f'--flight {path}: key {i}'
+        if not isinstance(k, dict):
+            die(f'{where_}: expected an object')
+        bad = set(k) - FLIGHT_KEY_KEYS
+        if bad:
+            die(f'{where_}: keys nwn-director doesn\'t know: {", ".join(sorted(bad))}')
+        if not _number(k.get('t')) or (last is not None and k['t'] <= last) or k['t'] < 0:
+            die(f'{where_}: "t" is seconds from the start, rising from key to key')
+        last = k['t']
+        if not _point(k.get('at')):
+            die(f'{where_}: "at" is [x, y] in metres')
+        if not _number(k.get('pitch')) or not 1 <= k['pitch'] <= 89:
+            die(f'{where_}: "pitch" is 1 (looking straight down) to 89 (level)')
+        if ('height' in k) == ('distance' in k):
+            die(f'{where_}: give the camera\'s "height" over the ground or its "distance", one of them')
+        if not _number(k.get('height', k.get('distance'))):
+            die(f'{where_}: "height" and "distance" are metres')
+        if 'heading' in k and 'lookAt' in k:
+            die(f'{where_}: give "heading" or "lookAt", not both')
+        if 'heading' in k and not _number(k['heading']):
+            die(f'{where_}: "heading" is degrees, 0 east, 90 north')
+        if 'lookAt' in k and not _point(k['lookAt']):
+            die(f'{where_}: "lookAt" is [x, y] in metres')
+    if keys[0]['t'] != 0:
+        die(f'--flight {path}: the first key is at "t": 0')
+    for name, lo, hi in (('pivot', 0.0, 30.0), ('ease', 0.0, None), ('step', 0.5, 30.0)):
+        if name in spec and (not _number(spec[name]) or spec[name] < lo or (hi is not None and spec[name] > hi)):
+            die(f'--flight {path}: "{name}" is a number from {lo}' + (f' to {hi}' if hi else ''))
+    if 'nightfall' in spec and (not _number(spec['nightfall']) or not 0 < spec['nightfall'] < keys[-1]['t']):
+        die(f'--flight {path}: "nightfall" is seconds into the flight, before its last key')
+    if spec.get('ease', 0) * 2 > keys[-1]['t']:
+        die(f'--flight {path}: "ease" is at most half the flight')
+    if 'looks' in spec and (not isinstance(spec['looks'], list) or not spec['looks'] or
+                            not all(isinstance(x, str) for x in spec['looks'])):
+        die(f'--flight {path}: "looks" is a list of looks\' ids (or "none"), filmed once each')
+    if 'name' in spec and not re.fullmatch(r'[A-Za-z0-9_-]{1,40}', str(spec['name'])):
+        die(f'--flight {path}: "name" is letters, digits, - and _')
+    return spec
+
+
+def _eased_time(t, total, ease):
+    """The flight's clock with its start and end eased: speed rises evenly from 0 over the first `ease` seconds and
+    falls to 0 over the last, and the eased clock still runs from 0 to total."""
+    if ease <= 0:
+        return t
+    if t < ease:
+        w = t * t / (2 * ease)
+    elif t > total - ease:
+        w = total - ease - (total - t) ** 2 / (2 * ease)
+    else:
+        w = t - ease / 2
+    return w * total / (total - ease)
+
+
+def _catmull(p0, p1, p2, p3, u):
+    """A point of the Catmull-Rom curve through p1 (u 0) and p2 (u 1)."""
+    return tuple(0.5 * (2 * b + (-a + c) * u + (2 * a - 5 * b + 4 * c - d) * u * u + (-a + 3 * b - 3 * c + d) * u ** 3)
+                 for a, b, c, d in zip(p0, p1, p2, p3))
+
+
+def flight_position(keys, t):
+    """Where the carrier is at flight time t (not eased): on a smooth curve through the keys' points, reaching each at
+    its time."""
+    pts = [tuple(k['at']) for k in keys]
+    times = [k['t'] for k in keys]
+    if t >= times[-1]:
+        return pts[-1]
+    i = max(j for j in range(len(times)) if times[j] <= t)
+    u = (t - times[i]) / (times[i + 1] - times[i])
+    p0 = pts[i - 1] if i > 0 else tuple(2 * a - b for a, b in zip(pts[0], pts[1]))
+    p3 = pts[i + 2] if i + 2 < len(pts) else tuple(2 * a - b for a, b in zip(pts[-1], pts[-2]))
+    return _catmull(p0, pts[i], pts[i + 1], p3, u)
+
+
+def flight_curve(keys, per=60):
+    """The carrier's path as a dense polyline along the curve through the keys' points: (points, arc lengths, the arc
+    length at each key)."""
+    pts, at_keys = [], [0.0]
+    for i in range(len(keys) - 1):
+        a, b = keys[i]['t'], keys[i + 1]['t']
+        for j in range(per):
+            pts.append(flight_position(keys, a + (b - a) * j / per))
+    pts.append(tuple(keys[-1]['at']))
+    arc = [0.0]
+    for p, q in zip(pts, pts[1:]):
+        arc.append(arc[-1] + math.dist(p, q))
+    at_keys = [arc[i * per] for i in range(len(keys))]
+    return pts, arc, at_keys
+
+
+def _along(pts, arc, s):
+    """The point arc length s along the polyline."""
+    if s <= 0:
+        return pts[0]
+    if s >= arc[-1]:
+        return pts[-1]
+    lo, hi = 0, len(arc) - 1
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        lo, hi = (mid, hi) if arc[mid] <= s else (lo, mid)
+    u = (s - arc[lo]) / max(arc[hi] - arc[lo], 1e-9)
+    return tuple(a + (b - a) * u for a, b in zip(pts[lo], pts[hi]))
+
+
+def flight_distance(keys, ease, blend=4.0, dt=0.05):
+    """How far along its path the carrier is at each dt of the flight: each stretch between keys at its own steady
+    speed, the changes of speed at the keys blended over `blend` seconds, and the start and end eased (_eased_time).
+    Returns (times, distances, the path's length)."""
+    pts, arc, at_keys = flight_curve(keys)
+    total = keys[-1]['t']
+    n = int(round(total / dt))
+    times = [i * dt for i in range(n + 1)]
+    speeds = []
+    for t in times[:-1]:
+        i = max(j for j in range(len(keys) - 1) if keys[j]['t'] <= t + 1e-9) if t < total else len(keys) - 2
+        speeds.append((at_keys[i + 1] - at_keys[i]) / (keys[i + 1]['t'] - keys[i]['t']))
+    w = max(1, int(round(blend / dt)))
+    for _ in range(2):   # twice: a triangular blend
+        sm = []
+        for i in range(len(speeds)):
+            lo, hi = max(0, i - w // 2), min(len(speeds), i + w // 2 + 1)
+            sm.append(sum(speeds[lo:hi]) / (hi - lo))
+        speeds = sm
+    dist = [0.0]
+    for v in speeds:
+        dist.append(dist[-1] + v * dt)
+    scale = arc[-1] / dist[-1] if dist[-1] > 0 else 0.0
+    dist = [x * scale for x in dist]
+    # The eased clock: distance at eased time.
+    eased = []
+    for t in times:
+        te = _eased_time(t, total, ease)
+        k = min(int(te / dt), n - 1)
+        u = (te - k * dt) / dt
+        eased.append(dist[k] + (dist[k + 1] - dist[k]) * u)
+    return times, eased, (pts, arc)
+
+
+def _pace(v):
+    """How the carrier moves at v m/s: (run, percent): percent > 0 faster, < 0 slower, by movement speed effects."""
+    base = FLIGHT_WALK if v <= FLIGHT_WALK else FLIGHT_RUN
+    pct = round((v / base - 1) * 100)
+    return base == FLIGHT_RUN, max(-99, min(99, pct))
+
+
+def _turns(a, b):
+    """The smaller turn from heading a to heading b, degrees (-180 to 180)."""
+    return (b - a + 180) % 360 - 180
+
+
+def camera_speed(turn, seconds, tilt=0.0, move=0.0):
+    """The SetCameraFacing transition (nTransitionType, 1 to 100) that turns `turn` degrees, tilts `tilt` degrees and
+    moves the camera `move` metres nearer or farther in about `seconds`: the fastest any of them needs (the others
+    then arrive early and hold)."""
+    if seconds <= 0:
+        return 0
+    n = max((abs(turn) / seconds / TURN_RATE) ** (2 / 3), abs(tilt) / seconds / PITCH_RATE,
+            20 * (abs(move) / seconds / DIST_RATE) ** (1 / 0.63))
+    return max(1, min(100, round(n)))
+
+
+def flight_clock(nightfall, hours):
+    """The hour the cameraman enters a flight's area at (dusk), and the clock to set as it rolls so that night falls
+    `nightfall` seconds in: the client turns an area to night only as the clock runs into it (as for a dawn look)."""
+    secs = hours.get('minutes', 2) * 60
+    if nightfall >= secs:
+        die(f'"nightfall" is less than a game hour here ({secs} s)')
+    night = (hours['dusk'] + 1) % 24
+    back = int(math.ceil(nightfall))
+    minute, second = divmod(secs - back, 60)
+    return hours['dusk'], {'hour': (night - 1) % 24, 'minute': minute, 'second': second}
+
+
+def plan_flight(spec, git=None):
+    """A flight as dir_load films it (a shot of kind flight): the carrier's legs, a step of seconds each, at the
+    speeds its eased path asks for, and the camera's moves, one per key, each timed to arrive at the next key."""
+    keys = spec['keys']
+    total = float(keys[-1]['t'])
+    ease = float(spec.get('ease', 3.0))
+    step = float(spec.get('step', 1.0))
+    pivot = float(spec.get('pivot', 2.0))
+    name = spec.get('name') or f'{spec["area"]}-flight'
+    start = flight_position(keys, 0.0)
+    times, dist, (pts, arc) = flight_distance(keys, ease)
+    gap = times[1] - times[0]
+    legs, here, t = [], start, 0.0
+    while t < total - 1e-6:
+        dt = min(step, total - t)
+        there = _along(pts, arc, dist[min(len(dist) - 1, int(round((t + dt) / gap)))])
+        v = math.dist(here, there) / dt
+        if v > FLIGHT_MAX_SPEED:
+            die(f'flight {name}: the carrier would have to move {v:.1f} m/s around {t:.0f} s '
+                f'(at most {FLIGHT_MAX_SPEED:.1f}): give its keys more time')
+        if v < 0.06:
+            legs.append({'wait': round(dt, 2)})
+        else:
+            run, pct = _pace(v)
+            legs.append({'to': [round(c, 2) for c in there], 'run': int(run), 'pct': pct, 'secs': round(dt, 2)})
+        here, t = there, t + dt
+
+    def camera(k):
+        p = flight_position(keys, k['t'])
+        if 'lookAt' in k:
+            heading = math.degrees(math.atan2(k['lookAt'][1] - p[1], k['lookAt'][0] - p[0])) % 360
+        elif 'heading' in k:
+            heading = k['heading'] % 360
+        else:   # along the way the carrier goes
+            q = flight_position(keys, min(total, k['t'] + 0.5)) if k['t'] < total else \
+                flight_position(keys, total - 0.5)
+            heading = math.degrees(math.atan2(q[1] - p[1], q[0] - p[0])) % 360 if k['t'] < total else \
+                math.degrees(math.atan2(p[1] - q[1], p[0] - q[0])) % 360
+        dist = k['distance'] if 'distance' in k else (k['height'] - pivot) / math.cos(math.radians(k['pitch']))
+        if not 1.0 <= dist <= FLIGHT_MAX_DIST:
+            die(f'flight {name}: key at {k["t"]} s puts the camera {dist:.1f} m from the carrier (1 to '
+                f'{FLIGHT_MAX_DIST:.0f}): lower its height, raise its pitch or the pivot')
+        return float(round(heading, 1)), float(round(dist, 2)), float(k['pitch'])
+
+    cams = [dict(zip(('dir', 'dist', 'pitch'), camera(keys[0])), t=0.0, speed=0)]
+    prev = cams[0]
+    for a, b in zip(keys, keys[1:]):
+        heading, dist, pitch = camera(b)
+        span = b['t'] - a['t']
+        speed = camera_speed(_turns(prev['dir'], heading), span, pitch - prev['pitch'], dist - prev['dist'])
+        cams.append({'t': float(a['t']), 'dir': heading, 'dist': dist, 'pitch': pitch, 'speed': speed})
+        prev = cams[-1]
+    shot = {'name': name, 'area': spec['area'], 'kind': 'flight', 'at': [round(c, 2) for c in start],
+            'seconds': total, 'pivot': pivot, 'legs': legs, 'cams': cams,
+            'encounters': encounters(git, start) if git else []}
+    if 'nightfall' in spec:
+        shot['nightfall'] = float(spec['nightfall'])
     return shot
 
 
@@ -561,7 +844,10 @@ def prepare(args, game, work):
     tags = {}
     shots = []
     looks = getattr(args, 'looks', None) or [None]
-    consts = game_constants(game, work) if any(looks) else {}
+    # A flight may name its own looks (its file's "looks"), in place of --look.
+    own = {id(spec): look_names(','.join(spec['looks']), args.look_table)
+           for kind, _, spec, _ in args.shot_specs if kind == 'flight' and 'looks' in spec}
+    consts = game_constants(game, work) if any(looks) or any(any(v) for v in own.values()) else {}
     copies = {}   # (area, look) -> the copy's resref
     for spec in args.shot_specs:
         kind, area, where_, event = spec
@@ -569,12 +855,20 @@ def prepare(args, game, work):
         git = gff(areas[area] + '.git')
         if event:
             event = compile_event(game, unpacked, event, len(shots))
-        shot = walk_shot(area, git) if kind == 'walk' else spot_shot(area, git, where_, event)
+        if kind == 'flight':
+            shot = plan_flight({**where_, 'area': area}, git)
+            if 'nightfall' in shot:
+                shot['hour'], shot['runInto'] = flight_clock(shot.pop('nightfall'), look_hours(ifo))
+        else:
+            shot = walk_shot(area, git) if kind == 'walk' else spot_shot(area, git, where_, event)
         if kind == 'walk' and len(shot['stops']) < 2:
             log(f'{area} has no exits to walk between; it will be skipped')
-        for s in shots_in_looks(shot, looks, args.look_table, look_hours(ifo), consts, copies):
+        for s in shots_in_looks(shot, own.get(id(where_), looks), args.look_table, look_hours(ifo), consts, copies):
             if s['area'] not in areas:
                 areas[s['area']] = copy_area(areas[area], args.look_table[s['look']['id']], s['area'], unpacked)
+            if 'look' in s:     # a look sets the time: a flight's nightfall is for flights without one
+                s.pop('hour', None)
+                s.pop('runInto', None)
             shots.append(s)
     if copies:
         log(f'{len(copies)} area copies for looks')
@@ -1008,19 +1302,21 @@ def encoder():
     return ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20']
 
 
-def record(path, size, sink=None):
-    """Record the screen, and the game's sound from the monitor of sink (off screen: the director's own) or of the
-    default output, to path."""
+def record(path, size, sink=None, fps=30):
+    """Record the screen at fps frames a second, and the game's sound from the monitor of sink (off screen: the
+    director's own) or of the default output, to path."""
     monitor = sink or shutil.which('pactl') and subprocess.run(['pactl', 'get-default-sink'], capture_output=True,
                                                                text=True).stdout.strip()
-    # Wall-clock timestamps and a constant 60 fps out: on a busy machine x11grab misses frames, and without these
+    # Wall-clock timestamps and a constant frame rate out: on a busy machine x11grab misses frames, and without these
     # the clip came out shorter than the shot and played fast (an 18 s clip of a 20 s circle); now a missed frame
     # is shown twice and the clip keeps real time, so clips of the same shot length stay in step.
-    cmd = ['ffmpeg', '-v', 'error', '-y', '-use_wallclock_as_timestamps', '1', '-f', 'x11grab', '-framerate', '60',
+    # 30 by default: a client drawing 30 to 50 frames a second (CPU-bound) recorded at 60 showed half its frames twice,
+    # unevenly, and judders; at 30, with the client still allowed 60, almost every frame recorded is a new one.
+    cmd = ['ffmpeg', '-v', 'error', '-y', '-use_wallclock_as_timestamps', '1', '-f', 'x11grab', '-framerate', str(fps),
            '-video_size', size, '-draw_mouse', '0', '-i', os.environ['DISPLAY']]
     if monitor:
         cmd += ['-use_wallclock_as_timestamps', '1', '-f', 'pulse', '-i', monitor + '.monitor']
-    cmd += encoder() + ['-pix_fmt', 'yuv420p', '-fps_mode', 'cfr', '-r', '60']
+    cmd += encoder() + ['-pix_fmt', 'yuv420p', '-fps_mode', 'cfr', '-r', str(fps)]
     if monitor:
         cmd += ['-c:a', 'aac', '-b:a', '192k']
     return subprocess.Popen(cmd + [path], stdin=subprocess.DEVNULL)
@@ -1151,7 +1447,7 @@ def take_stills(slog, out, db, client=None):
     return sheets
 
 
-def film_video(slog, out, size, seconds, desktop=True, sink=None):
+def film_video(slog, out, size, seconds, desktop=True, sink=None, fps=30):
     """Record every shot from its ROLL to its CUT as out/<shot>.mp4. On the desktop, the game's window is brought to
     the front first."""
     recorder = None
@@ -1163,7 +1459,7 @@ def film_video(slog, out, size, seconds, desktop=True, sink=None):
                 log(f'recording {name}')
                 if desktop:
                     raise_client()
-                recorder = record(os.path.join(out, name + '.mp4'), size, sink)
+                recorder = record(os.path.join(out, name + '.mp4'), size, sink, fps)
             elif what == 'CUT' and recorder:
                 recorder.send_signal(signal.SIGINT)
                 recorder.wait()
@@ -1252,7 +1548,10 @@ def cmd_film(args):
         if args.stills:
             take_stills(slog, out, os.path.join(home, 'database', 'director.sqlite3'), clients[-1])
         else:
-            film_video(slog, out, size, args.seconds, desktop=not offscreen, sink=args.sink)
+            # The longest shot: --seconds, or a flight's own length.
+            longest = max([args.seconds] + [spec['keys'][-1]['t'] for kind, _, spec, _ in args.shot_specs
+                                             if kind == 'flight'])
+            film_video(slog, out, size, longest, desktop=not offscreen, sink=args.sink, fps=args.fps)
     finally:
         for client in clients:
             # SIGKILL: on a normal quit the client crashes tearing down the cameraman's cutscene
@@ -1284,12 +1583,15 @@ def shot_specs(args):
         if not sep or not sep2 or not area or not where_ or not code.strip():
             die(f'--event {event}: expected AREA@X,Y=CODE or AREA@TAG=CODE')
         specs.append(('spot', area.strip(), where_.strip(), code.strip()))
+    for path in args.flight:
+        spec = load_flight(path)
+        specs.append(('flight', spec['area'].strip(), spec, None))
     if not specs:
-        die('nothing to film: give --areas and/or --spot')
+        die('nothing to film: give --areas, --spot, --event or --flight')
     if args.stills < 0:
         die('--stills needs a number of stills')
-    if args.stills and (args.areas or args.event):
-        die('--stills takes spots only (--spot), not --areas or --event')
+    if args.stills and (args.areas or args.event or args.flight):
+        die('--stills takes spots only (--spot), not --areas, --event or --flight')
     return specs
 
 
@@ -1312,6 +1614,12 @@ def main():
                    help='a spot where CODE runs a few seconds in: a script of the module, or NWScript '
                         'statements (checked before filming), with OBJECT_SELF the tagged object (or the '
                         'invisible walker at the point) (repeatable)')
+    f.add_argument('--flight', action='append', default=[], metavar='FILE',
+                   help='a camera flight: keyframes (where, how high, which way, pitch) in a JSON file, flown smoothly '
+                        'in its own time (README: Flights) (repeatable)')
+    f.add_argument('--fps', type=int, default=30,
+                   help='frames a second the videos are recorded at, constant (30: smoother than 60 on a client that '
+                        'draws 30 to 50)')
     f.add_argument('--character', required=True, help="the cameraman's character (.bic)")
     f.add_argument('--stills', type=int, default=0, metavar='N',
                    help='spots as N stills (one every 360/N degrees) and a contact sheet instead of a video, '
@@ -1360,6 +1668,8 @@ def main():
         args.tlk_dir = os.path.expanduser(args.tlk_dir or os.path.join(user, 'tlk'))
         if not os.path.exists(args.character):
             die(f'no character at {args.character}')
+        if not 1 <= args.fps <= 60:
+            die('--fps is 1 to 60')
         args.shot_specs = shot_specs(args)
         args.look_table = load_looks(args.looks_file, args.sky)
         args.looks = look_names(args.look, args.look_table)

@@ -3,6 +3,7 @@
     python3 -m unittest discover tests
 """
 import json
+import math
 import os
 import queue
 import shutil
@@ -407,7 +408,7 @@ class ServerLogLines(unittest.TestCase):
 
 class ShotSpecs(unittest.TestCase):
     def args(self, **kw):
-        base = dict(areas=None, spot=[], event=[], stills=0)
+        base = dict(areas=None, spot=[], event=[], flight=[], stills=0)
         return types.SimpleNamespace(**{**base, **kw})
 
     def test_order_and_parts(self):
@@ -551,6 +552,135 @@ class ContactSheet(unittest.TestCase):
             self.assertEqual(size, '2560,720')
         finally:
             shutil.rmtree(tmp)
+
+
+def flight_file(spec):
+    fd, path = tempfile.mkstemp(suffix='.json')
+    with os.fdopen(fd, 'w') as fh:
+        json.dump(spec, fh)
+    return path
+
+
+FLIGHT = {'area': 'vale', 'pivot': 3, 'ease': 3, 'keys': [
+    {'t': 0, 'at': [40, 40], 'height': 6, 'pitch': 75, 'heading': 90},
+    {'t': 15, 'at': [70, 42], 'height': 12, 'pitch': 65, 'lookAt': [89, 72]},
+    {'t': 30, 'at': [56, 58], 'distance': 8, 'pitch': 76}]}
+
+
+class Flights(unittest.TestCase):
+    def load(self, spec):
+        path = flight_file(spec)
+        try:
+            return d.load_flight(path)
+        finally:
+            os.remove(path)
+
+    def test_loads_a_good_flight(self):
+        self.assertEqual(self.load(FLIGHT)['area'], 'vale')
+
+    def test_bad_flights_die(self):
+        def key(i, **kw):
+            keys = [dict(k) for k in FLIGHT['keys']]
+            keys[i].update(kw)
+            return {**FLIGHT, 'keys': keys}
+        bad = [
+            {'keys': FLIGHT['keys']},                               # no area
+            {**FLIGHT, 'keys': FLIGHT['keys'][:1]},                # one key
+            {**FLIGHT, 'speed': 3},                                # a key it doesn't know
+            key(1, t=0),                                           # time not rising
+            key(0, t=2),                                           # not starting at 0
+            key(1, at=[1]),                                        # not a point
+            key(1, pitch=95),                                      # pitch out of range
+            key(1, distance=10),                                   # height and distance both
+            key(0, lookAt=[1, 1]),                                 # heading and lookAt both
+            {**FLIGHT, 'ease': 20},                                # easing more than half the flight
+            {**FLIGHT, 'nightfall': 40},                           # after the last key
+            {**FLIGHT, 'name': 'no spaces'},
+        ]
+        for spec in bad:
+            with self.subTest(spec=spec), self.assertRaises(SystemExit):
+                self.load(spec)
+
+    def test_path_passes_through_every_key_at_its_time(self):
+        for k in FLIGHT['keys']:
+            x, y = d.flight_position(FLIGHT['keys'], k['t'])
+            self.assertAlmostEqual(x, k['at'][0])
+            self.assertAlmostEqual(y, k['at'][1])
+
+    def test_eased_clock_runs_from_start_to_end_and_starts_slow(self):
+        self.assertAlmostEqual(d._eased_time(0, 30, 3), 0)
+        self.assertAlmostEqual(d._eased_time(30, 30, 3), 30)
+        self.assertLess(d._eased_time(1, 30, 3), 1)
+        self.assertLess(d._eased_time(1, 30, 3) - d._eased_time(0.5, 30, 3),
+                        d._eased_time(15.5, 30, 3) - d._eased_time(15, 30, 3))
+
+    def test_plan_legs_cover_the_flight(self):
+        shot = d.plan_flight(self.load(FLIGHT))
+        self.assertEqual(shot['kind'], 'flight')
+        self.assertEqual(shot['at'], [40, 40])
+        self.assertAlmostEqual(sum(leg.get('secs', leg.get('wait', 0)) for leg in shot['legs']), 30)
+        self.assertEqual(shot['legs'][-1]['to'], [56, 58])
+        for leg in shot['legs']:
+            if 'to' in leg:
+                self.assertIn(leg['run'], (0, 1))
+                self.assertTrue(-99 <= leg['pct'] <= 99)
+        # Eased: the first leg is slower than one in the middle.
+        self.assertLess(shot['legs'][0]['pct'], shot['legs'][len(shot['legs']) // 2]['pct'])
+
+    def test_plan_camera_one_move_per_key(self):
+        shot = d.plan_flight(self.load(FLIGHT))
+        cams = shot['cams']
+        self.assertEqual(len(cams), 3)
+        self.assertEqual(cams[0]['speed'], 0)                       # snapped before the roll
+        self.assertEqual([c['t'] for c in cams[1:]], [0, 15])      # each move starts at the key before its own
+        self.assertAlmostEqual(cams[0]['dist'], (6 - 3) / math.cos(math.radians(75)), places=1)
+        self.assertEqual(cams[2]['dist'], 8)
+        self.assertTrue(all(1 <= c['speed'] <= 100 for c in cams[1:]))
+
+    def test_too_fast_or_too_far_dies(self):
+        fast = {**FLIGHT, 'keys': [FLIGHT['keys'][0], {**FLIGHT['keys'][1], 't': 1}]}
+        far = {**FLIGHT, 'keys': [FLIGHT['keys'][0], {**FLIGHT['keys'][1], 'height': 80}]}
+        for spec in (fast, far):
+            with self.subTest(spec=spec), self.assertRaises(SystemExit):
+                d.plan_flight(self.load(spec))
+
+    def test_camera_speed_matches_the_measured_turn_rate(self):
+        self.assertEqual(d.camera_speed(45, 2.2), 20)               # about 20 degrees a second
+        self.assertEqual(d.camera_speed(6.5, 10), 2)
+        self.assertEqual(d.camera_speed(0, 10), 1)
+        self.assertEqual(d.camera_speed(0, 10, tilt=40), 20)          # 4 degrees a second
+        self.assertEqual(d.camera_speed(0, 10, move=20), 20)          # 2 metres a second
+        self.assertEqual(d.camera_speed(45, 2.2, tilt=1), 20)          # the fastest need wins
+        self.assertEqual(d._turns(350, 10), 20)
+        self.assertEqual(d._turns(10, 350), -20)
+
+    def test_nightfall_clock(self):
+        hour, into = d.flight_clock(20, {'dawn': 6, 'dusk': 18, 'minutes': 2})
+        self.assertEqual(hour, 18)
+        self.assertEqual(into, {'hour': 18, 'minute': 1, 'second': 40})
+        with self.assertRaises(SystemExit):
+            d.flight_clock(200, {'dawn': 6, 'dusk': 18, 'minutes': 2})
+
+    def test_shot_specs_take_flights(self):
+        path = flight_file(FLIGHT)
+        try:
+            args = types.SimpleNamespace(areas=None, spot=[], event=[], flight=[path], stills=0)
+            (spec,) = d.shot_specs(args)
+            self.assertEqual(spec[:2], ('flight', 'vale'))
+            with self.assertRaises(SystemExit):
+                d.shot_specs(types.SimpleNamespace(**{**vars(args), 'stills': 4}))
+        finally:
+            os.remove(path)
+
+
+class Recording(unittest.TestCase):
+    def test_constant_rate_given(self):
+        with mock.patch.object(d.subprocess, 'Popen') as popen, mock.patch.dict(os.environ, {'DISPLAY': ':99'}), \
+                mock.patch.object(d, 'encoder', return_value=['-c:v', 'libx264']):
+            d.record('/tmp/x.mp4', '1920x1080', sink='s', fps=30)
+        cmd = popen.call_args[0][0]
+        self.assertEqual(cmd[cmd.index('-framerate') + 1], '30')
+        self.assertEqual(cmd[cmd.index('-r') + 1], '30')
 
 
 if __name__ == '__main__':

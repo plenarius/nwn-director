@@ -86,6 +86,19 @@ string Dir_ShotString(json jShot, string sKey)
     return JsonGetString(JsonObjectGet(jShot, sKey));
 }
 
+float Dir_JsonFloat(json j, string sKey, float fDefault)
+{
+    json v = JsonObjectGet(j, sKey);
+    int t = JsonGetType(v);
+    return (t == JSON_TYPE_FLOAT || t == JSON_TYPE_INTEGER) ? JsonGetFloat(v) : fDefault;
+}
+
+int Dir_JsonInt(json j, string sKey, int nDefault)
+{
+    json v = JsonObjectGet(j, sKey);
+    return JsonGetType(v) == JSON_TYPE_INTEGER ? JsonGetInt(v) : nDefault;
+}
+
 // (fX, fY) on the ground, if it is somewhere a creature can walk.
 int Dir_Walkable(object oArea, float fX, float fY)
 {
@@ -377,7 +390,7 @@ void Dir_Unlook(object oArea)
 void Dir_Set(object oArea, json jShot, location lAt)
 {
     json jLook = JsonObjectGet(jShot, "look");
-    SetTime(Dir_LookInt(jLook, "hour", 10), 0, 0, 0);
+    SetTime(Dir_LookInt(jLook, "hour", Dir_JsonInt(jShot, "hour", 10)), 0, 0, 0);
     SetWeather(oArea, Dir_LookInt(jLook, "weather", WEATHER_CLEAR));
     object o = GetFirstObjectInArea(oArea);
     while (GetIsObjectValid(o))
@@ -387,13 +400,13 @@ void Dir_Set(object oArea, json jShot, location lAt)
         o = GetNextObjectInArea(oArea);
     }
     if (JsonGetType(jLook) == JSON_TYPE_OBJECT)
-        Dir_Look(oArea, jLook, lAt, Dir_ShotString(jShot, "kind") == "walk");
+        Dir_Look(oArea, jLook, lAt, Dir_ShotString(jShot, "kind") != "spot");
 }
 
 // The invisible walker the camera follows. Made from the stock commoner blueprint with every
 // script blanked before it exists, so none of the module's scripts (a custom spawn script, waypoint
 // walking, AI) ever run on it. It can't be hurt and monsters leave it alone.
-object Dir_Walker(location lLoc)
+object Dir_Walker(location lLoc, int nWalkRate = -1)
 {
     json j = TemplateToJson("nw_commale", RESTYPE_UTC);
     string sScripts = "ScriptAttacked,ScriptDamaged,ScriptDeath,ScriptDialogue,ScriptDisturbed,ScriptEndRound,"
@@ -409,6 +422,8 @@ object Dir_Walker(location lLoc)
     j = Dir_GffSet(j, "Appearance_Type", JsonInt(DIRECTOR_WALKER_APPEARANCE));
     j = Dir_GffSet(j, "Tag", JsonString("DIRECTOR_WALKER"));
     j = Dir_GffSet(j, "Conversation", JsonString(""));
+    if (nWalkRate >= 0)
+        j = Dir_GffSet(j, "WalkRate", JsonInt(nWalkRate));
     object oWalker = JsonToObject(j, lLoc);
 
     SetName(oWalker, " ");
@@ -436,7 +451,13 @@ void Dir_Hide(object oCam)
 // to the walker: moving to or following an object makes it the action target, and the client rings it.
 void Dir_Keep(object oCam, object oWalker)
 {
-    if (GetDistanceBetween(oCam, oWalker) > 4.0)
+    // A flight's carrier can be faster than the cameraman runs: far behind, it is jumped along (out of shot).
+    if (GetDistanceBetween(oCam, oWalker) > 12.0 && GetLocalInt(oWalker, "DIRECTOR_FLIGHT"))
+    {
+        AssignCommand(oCam, ClearAllActions());
+        AssignCommand(oCam, JumpToLocation(GetLocation(oWalker)));
+    }
+    else if (GetDistanceBetween(oCam, oWalker) > 4.0)
     {
         AssignCommand(oCam, ClearAllActions());
         AssignCommand(oCam, ActionMoveToLocation(GetLocation(oWalker), TRUE));
@@ -458,11 +479,65 @@ void Dir_Event(object oWalker, object oArea, json jShot)
     Dir_Log("event ran " + sScript);
 }
 
+// A movement speed effect of nPercent (more than 0 faster, less slower) on o, in place of the one it had.
+void Dir_Pace(object o, int nPercent)
+{
+    effect e = GetFirstEffect(o);
+    while (GetIsEffectValid(e))
+    {
+        if (GetEffectTag(e) == "DIR_PACE")
+            RemoveEffect(o, e);
+        e = GetNextEffect(o);
+    }
+    if (nPercent > 0)
+        ApplyEffectToObject(DURATION_TYPE_PERMANENT, TagEffect(SupernaturalEffect(EffectMovementSpeedIncrease(nPercent)), "DIR_PACE"), o);
+    else if (nPercent < 0)
+        ApplyEffectToObject(DURATION_TYPE_PERMANENT, TagEffect(SupernaturalEffect(EffectMovementSpeedDecrease(-nPercent)), "DIR_PACE"), o);
+}
+
+// A flight's camera move: one SetCameraFacing per key, at the transition speed director.py worked out, so the engine
+// eases it frame by frame (a move set again every tick stepped).
+void Dir_FlightCam(object oCam, json jCam)
+{
+    Dir_Cam(oCam, Dir_JsonFloat(jCam, "dir", 0.0), Dir_JsonFloat(jCam, "dist", 10.0), Dir_JsonFloat(jCam, "pitch", 70.0),
+        Dir_JsonInt(jCam, "speed", 0));
+}
+
+// Fly: the carrier's legs as queued actions (each at its own pace), and the camera's moves at their times.
+void Dir_FlightGo(object oCam, object oCarrier, object oArea, json jShot)
+{
+    json jLegs = JsonObjectGet(jShot, "legs");
+    int i;
+    for (i = 0; i < JsonGetLength(jLegs); i++)
+    {
+        json jLeg = JsonArrayGet(jLegs, i);
+        float fWait = Dir_JsonFloat(jLeg, "wait", -1.0);
+        if (fWait >= 0.0)
+        {
+            AssignCommand(oCarrier, ActionWait(fWait));
+            continue;
+        }
+        json jTo = JsonObjectGet(jLeg, "to");
+        location lTo = Dir_Ground(oArea, JsonGetFloat(JsonArrayGet(jTo, 0)), JsonGetFloat(JsonArrayGet(jTo, 1)));
+        AssignCommand(oCarrier, ActionDoCommand(Dir_Pace(oCarrier, Dir_JsonInt(jLeg, "pct", 0))));
+        AssignCommand(oCarrier, ActionForceMoveToLocation(lTo, Dir_JsonInt(jLeg, "run", 0),
+            Dir_JsonFloat(jLeg, "secs", 2.0) * 3.0 + 5.0));
+    }
+    json jCams = JsonObjectGet(jShot, "cams");
+    for (i = 1; i < JsonGetLength(jCams); i++)
+    {
+        json jCam = JsonArrayGet(jCams, i);
+        DelayCommand(Dir_JsonFloat(jCam, "t", 0.0), Dir_FlightCam(oCam, jCam));
+    }
+}
+
 // End a shot: free the camera and go on to the next one.
 void Dir_Cut(object oCam, object oWalker, int nShot)
 {
     Dir_Log("CUT");
     AttachCamera(oCam, OBJECT_INVALID);
+    SetCameraHeight(oCam, 0.0);
+    Dir_Pace(oCam, 0);
     Dir_Unlook(GetArea(oWalker));
     DestroyObject(oWalker, 1.0);
     DelayCommand(2.0, Dir_DoShot(oCam, nShot + 1));
@@ -481,12 +556,16 @@ float Dir_SpotDir(json jShot, float fElapsed, float fSeconds)
 void Dir_Track(object oCam, object oWalker, int nShot, int bWalk, float fElapsed)
 {
     float fSeconds = GetLocalFloat(GetModule(), "DIRECTOR_SECONDS");
-    if (bWalk)
+    int bFlight = GetLocalInt(oWalker, "DIRECTOR_FLIGHT");
+    // A flight lasts its own time (its last key and a second to settle), and its camera moves are already scheduled.
+    if (bFlight)
+        fSeconds = Dir_JsonFloat(Dir_Shot(nShot), "seconds", fSeconds) + 1.0;
+    else if (bWalk)
         Dir_Cam(oCam, GetFacing(oWalker), DIRECTOR_WALK_DIST, DIRECTOR_WALK_PITCH, CAMERA_TRANSITION_TYPE_SLOW);
     else
         Dir_Cam(oCam, Dir_SpotDir(Dir_Shot(nShot), fElapsed, fSeconds), DIRECTOR_SPOT_DIST, DIRECTOR_SPOT_PITCH, CAMERA_TRANSITION_TYPE_MEDIUM);
     Dir_Keep(oCam, oWalker);
-    if (GetLocalInt(oWalker, "DIRECTOR_DONE") || fElapsed >= fSeconds)
+    if ((GetLocalInt(oWalker, "DIRECTOR_DONE") && !bFlight) || fElapsed >= fSeconds)
     {
         Dir_Cut(oCam, oWalker, nShot);
         return;
@@ -552,6 +631,8 @@ void Dir_Action(object oCam, object oWalker, int nShot, int bWalk, string sName)
 {
     Dir_Log("ROLL " + sName);
     Dir_LookRoll(oWalker, nShot, JsonObjectGet(Dir_Shot(nShot), "look"));
+    if (GetLocalInt(oWalker, "DIRECTOR_FLIGHT"))
+        Dir_FlightGo(oCam, oWalker, GetArea(oWalker), Dir_Shot(nShot));
     if (!bWalk && GetLocalInt(GetModule(), "DIRECTOR_STILLS") > 0)
         Dir_Still(oCam, oWalker, nShot, 0);
     else
@@ -564,21 +645,42 @@ void Dir_Roll(object oCam, object oWalker, object oArea, int nShot)
     // A dawn look: the client shows the dawn sky only as the clock runs into dawn, so it goes back a few seconds now,
     // with the cameraman in the area and nothing of the shot scheduled yet (SetTime runs pending DelayCommands).
     json jRunInto = JsonObjectGet(JsonObjectGet(jShot, "look"), "runInto");
+    // A flight's nightfall: the same, so that night falls during the flight.
+    if (JsonGetType(jRunInto) != JSON_TYPE_OBJECT)
+        jRunInto = JsonObjectGet(jShot, "runInto");
     if (JsonGetType(jRunInto) == JSON_TYPE_OBJECT)
         SetTime(Dir_LookInt(jRunInto, "hour", 0), Dir_LookInt(jRunInto, "minute", 0),
             Dir_LookInt(jRunInto, "second", 0), 0);
     int bWalk = Dir_ShotString(jShot, "kind") == "walk";
+    int bFlight = Dir_ShotString(jShot, "kind") == "flight";
     // Stills: black until the camera is set (Dir_Still lifts it). A slow client can take seconds to move the
     // camera into place; the client does what the server says in order, so the first picture after the black has
     // it in place, and director.py waits for that.
     if (!bWalk && GetLocalInt(GetModule(), "DIRECTOR_STILLS") > 0)
         BlackScreen(oCam);
     SetCameraLimits(oCam, 1.0, 89.0, 1.0, 40.0);
-    SetCameraFlags(oCam, CAMERA_FLAG_ENABLE_COLLISION | CAMERA_FLAG_DISABLE_SHAKE | CAMERA_FLAG_DISABLE_SCROLL
-        | CAMERA_FLAG_DISABLE_TURN | CAMERA_FLAG_DISABLE_TILT | CAMERA_FLAG_DISABLE_ZOOM);
+    // A flight's camera passes over hills and trees on its planned path: collision would pull it in, in jumps.
+    SetCameraFlags(oCam, (bFlight ? CAMERA_FLAG_DISABLE_COLLISION : CAMERA_FLAG_ENABLE_COLLISION)
+        | CAMERA_FLAG_DISABLE_SHAKE | CAMERA_FLAG_DISABLE_SCROLL | CAMERA_FLAG_DISABLE_TURN | CAMERA_FLAG_DISABLE_TILT
+        | CAMERA_FLAG_DISABLE_ZOOM);
     AttachCamera(oCam, oWalker, FALSE);
 
-    if (bWalk)
+    if (bFlight)
+    {
+        // The pivot is snapped now, before the roll (SetCameraHeight doesn't ease), as is the first key's camera.
+        SetLocalInt(oWalker, "DIRECTOR_FLIGHT", TRUE);
+        // A plot creature ignores movement speed decreases (measured: 50% and 80% slower changed nothing), and the
+        // carrier is paced down as often as up: immortal instead.
+        SetPlotFlag(oWalker, FALSE);
+        SetImmortal(oWalker, TRUE);
+        SetCameraHeight(oCam, Dir_JsonFloat(jShot, "pivot", 0.0));
+        // Again just before the roll: the first flight of a run sometimes kept the default height (a client still
+        // settling into the area it just loaded).
+        DelayCommand(1.0, SetCameraHeight(oCam, Dir_JsonFloat(jShot, "pivot", 0.0)));
+        Dir_Pace(oCam, 99);
+        DelayCommand(0.5, Dir_FlightCam(oCam, JsonArrayGet(JsonObjectGet(jShot, "cams"), 0)));
+    }
+    else if (bWalk)
     {
         // Forced moves: a stop with no path to it doesn't end the walk; after a while the walker
         // is jumped there instead.
@@ -639,7 +741,8 @@ void Dir_DoShot(object oCam, int nShot)
         return;
     }
     Dir_Set(oArea, jShot, lStart);
-    object oWalker = Dir_Walker(lStart);
+    // A flight's carrier walks at creaturespeed.2da row 8 (DM_Fast), paced up or down from there (director.py).
+    object oWalker = Dir_Walker(lStart, Dir_ShotString(jShot, "kind") == "flight" ? 8 : -1);
     Dir_LookWalker(oWalker, JsonObjectGet(jShot, "look"));
 
     // The cameraman goes too; changing area detaches the camera, so it is attached once the area
